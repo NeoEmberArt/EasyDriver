@@ -1,0 +1,34 @@
+name: 💡 Feature Request
+description: Suggest a new feature or improvement for EasyDriver
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: input
+    id: summary
+    attributes:
+      label: Summary
+      description: One-sentence summary of the feature.
+      placeholder: Support for custom driver mapping presets
+    validations:
+      required: true
+
+  - type: textarea
+    id: details
+    attributes:
+      label: Detailed Description
+      description: Describe your idea in detail.
+      placeholder: It would help if...
+    validations:
+      required: false
+
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority
+      description: What's the priority level?
+      options:
+        - Low
+        - Medium
+        - High
+    validations:
+      required: false
