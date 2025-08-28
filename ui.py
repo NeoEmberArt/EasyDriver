@@ -49,6 +49,9 @@ class BONEMINMAX_PT_main_panel(bpy.types.Panel):
         if is_ready:
             header.label(text="", icon='CHECKMARK')
         
+        # Clear source button
+        header.operator("boneminmax.clear_source", text="", icon='TRASH')
+        
         if not getattr(context.scene, "show_source", True):
             return
             
@@ -66,6 +69,61 @@ class BONEMINMAX_PT_main_panel(bpy.types.Panel):
         else:
             self.draw_object_source(col, props, context)
 
+    def draw_target_panel(self, layout, props, context):
+        """Draw simplified target configuration."""
+        # Collapsible target section
+        box = layout.box()
+        header = box.row()
+        
+        # Toggle icon
+        icon = "TRIA_DOWN" if getattr(context.scene, "show_targets", True) else "TRIA_RIGHT"
+        header.prop(context.scene, "show_targets", icon=icon, icon_only=True, emboss=False)
+        
+        # Title and count
+        header.label(text="Targets", icon='IMPORT')
+        
+        target_count = self.get_target_count(props)
+        if target_count > 0:
+            header.label(text=f"({target_count})")
+        
+        # Clear targets button
+        header.operator("boneminmax.clear_targets", text="", icon='TRASH')
+        
+        if not getattr(context.scene, "show_targets", True):
+            return
+            
+        # Content
+        col = box.column()
+        
+        # Target type selection - 3 buttons side by side
+        row = col.row(align=True)
+        
+        # Custom Pose button
+        pose_btn = row.operator("boneminmax.set_target_type", text="Pose", 
+                               depress=(props.target_type == 'CUSTOM_POSE'))
+        pose_btn.target_type = 'CUSTOM_POSE'
+        
+        # Shapekey List button
+        shape_btn = row.operator("boneminmax.set_target_type", text="ShapeKeys",
+                                depress=(props.target_type == 'SHAPEKEY_LIST'))
+        shape_btn.target_type = 'SHAPEKEY_LIST'
+        
+        # Path List button
+        path_btn = row.operator("boneminmax.set_target_type", text="Custom Paths",
+                               depress=(props.target_type == 'PATH_LIST'))
+        path_btn.target_type = 'PATH_LIST'
+        
+        col.separator(factor=0.5)
+        
+        # Target-specific UI
+        if props.target_type == 'CUSTOM_POSE':
+            self.draw_pose_targets(col, props)
+        elif props.target_type == 'SHAPEKEY_LIST':
+            self.draw_shapekey_targets(col, props)
+        elif props.target_type == 'PATH_LIST':
+            self.draw_path_targets(col, props)
+
+    # ... rest of the methods remain the same ...
     def draw_bone_source(self, layout, props, context):
         """Draw bone source controls."""
         # Record buttons
@@ -135,57 +193,6 @@ class BONEMINMAX_PT_main_panel(bpy.types.Panel):
             if props.from_object_detected_axis:
                 axis_col = row.column()
                 axis_col.label(text=props.from_object_detected_axis, icon='ORIENTATION_GIMBAL')
-
-    def draw_target_panel(self, layout, props, context):
-        """Draw simplified target configuration."""
-        # Collapsible target section
-        box = layout.box()
-        header = box.row()
-        
-        # Toggle icon
-        icon = "TRIA_DOWN" if getattr(context.scene, "show_targets", True) else "TRIA_RIGHT"
-        header.prop(context.scene, "show_targets", icon=icon, icon_only=True, emboss=False)
-        
-        # Title and count
-        header.label(text="Targets", icon='IMPORT')
-        
-        target_count = self.get_target_count(props)
-        if target_count > 0:
-            header.label(text=f"({target_count})")
-        
-        if not getattr(context.scene, "show_targets", True):
-            return
-            
-        # Content
-        col = box.column()
-        
-        # Target type selection - 3 buttons side by side
-        row = col.row(align=True)
-        
-        # Custom Pose button
-        pose_btn = row.operator("boneminmax.set_target_type", text="Custom Pose", 
-                               depress=(props.target_type == 'CUSTOM_POSE'))
-        pose_btn.target_type = 'CUSTOM_POSE'
-        
-        # Shapekey List button
-        shape_btn = row.operator("boneminmax.set_target_type", text="Shape Keys",
-                                depress=(props.target_type == 'SHAPEKEY_LIST'))
-        shape_btn.target_type = 'SHAPEKEY_LIST'
-        
-        # Path List button
-        path_btn = row.operator("boneminmax.set_target_type", text="Custom Paths",
-                               depress=(props.target_type == 'PATH_LIST'))
-        path_btn.target_type = 'PATH_LIST'
-        
-        col.separator(factor=0.5)
-        
-        # Target-specific UI
-        if props.target_type == 'CUSTOM_POSE':
-            self.draw_pose_targets(col, props)
-        elif props.target_type == 'SHAPEKEY_LIST':
-            self.draw_shapekey_targets(col, props)
-        elif props.target_type == 'PATH_LIST':
-            self.draw_path_targets(col, props)
 
     def draw_pose_targets(self, layout, props):
         """Draw pose target controls."""
@@ -328,7 +335,7 @@ class BONEMINMAX_PT_main_panel(bpy.types.Panel):
         if can_create:
             box.label(text="Ready to create drivers", icon='CHECKMARK')
         else:
-            box.label(text="Configure source and targets", icon='INFO')
+            box.label(text="Set up source and targets", icon='INFO')
         
         # Action buttons
         col = box.column(align=True)
@@ -336,18 +343,37 @@ class BONEMINMAX_PT_main_panel(bpy.types.Panel):
         
         # Create button
         create_row = col.row()
-        create_row.enabled = can_create
+        create_row.enabled = bool(can_create)
         create_row.operator("boneminmax.create_drivers", text="Create Drivers", icon='PLUS')
         
-        # Remove button - changed icon from MINUS to REMOVE
+        # Constraint buttons section
+        col.separator(factor=0.5)
+        constraint_col = col.column(align=True)
+        constraint_col.scale_y = 1.0
+        
+        # Limit Source button
+        limit_row = constraint_col.row()
+        limit_row.enabled = bool(source_ready)
+        limit_row.operator("boneminmax.limit_source_transforms", text="Limit Source Transforms", icon='CONSTRAINT')
+        
+        # One Axis Limit button
+        one_axis_row = constraint_col.row()
+        one_axis_row.enabled = bool(source_ready)
+        one_axis_row.operator("boneminmax.one_axis_source_limit", text="Lock to One Axis Only", icon='LOCKED')
+        
+        col.separator(factor=0.5)
+        
+        # Remove button
         col.operator("boneminmax.remove_drivers", text="Remove Drivers", icon='REMOVE')
+
+
 
     def get_source_status(self, props):
         """Check if source is properly configured."""
         if props.from_source_type == 'BONE':
-            return props.from_has_min and props.from_has_max and props.from_detected_axis
+            return bool(props.from_has_min and props.from_has_max and props.from_detected_axis)
         else:
-            return props.from_object_has_min and props.from_object_has_max and props.from_object_detected_axis
+            return bool(props.from_object_has_min and props.from_object_has_max and props.from_object_detected_axis)
 
     def get_target_count(self, props):
         """Get number of configured targets."""
