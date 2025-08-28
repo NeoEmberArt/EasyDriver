@@ -1,8 +1,0 @@
-blank_issues_enabled: false
-contact_links:
-  - name: 🐞 Report a Bug
-    url: https://github.com/NeoEmberArt/EasyDriver/issues/new?template=bug_report.yml
-    about: Report an issue with the EasyDriver addon
-  - name: 💡 Feature Request
-    url: https://github.com/NeoEmberArt/EasyDriver/issues/new?template=feature_request.yml
-    about: Suggest a new feature for EasyDriver
