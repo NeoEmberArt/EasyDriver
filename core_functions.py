@@ -8,7 +8,6 @@ import bpy
 import re
 import math
 
-#combined code - mistakenly merged working code for only material nodes
 def createDriver(armature_name, from_path, fromMin, fromMax, to_path, toMin, toMax, selfRotation=False, isDegrees=False):
     """Create a driver from one bone/property to another with linear mapping and clamping."""
     

@@ -346,25 +346,23 @@ class BONEMINMAX_PT_main_panel(bpy.types.Panel):
         create_row.enabled = bool(can_create)
         create_row.operator("boneminmax.create_drivers", text="Create Drivers", icon='PLUS')
         
-        # Constraint buttons section
+        # Constraint buttons section - side by side
         col.separator(factor=0.5)
-        constraint_col = col.column(align=True)
-        constraint_col.scale_y = 1.0
+        constraint_row = col.row(align=True)
+        constraint_row.scale_y = 1.0
+        constraint_row.enabled = bool(source_ready)
         
-        # Limit Source button
-        limit_row = constraint_col.row()
-        limit_row.enabled = bool(source_ready)
-        limit_row.operator("boneminmax.limit_source_transforms", text="Limit Source Transforms", icon='CONSTRAINT')
+        # Lock to One Axis button
+        constraint_row.operator("boneminmax.one_axis_source_limit", text="Lock to one axis", icon='LOCKED')
         
-        # One Axis Limit button
-        one_axis_row = constraint_col.row()
-        one_axis_row.enabled = bool(source_ready)
-        one_axis_row.operator("boneminmax.one_axis_source_limit", text="Lock to One Axis Only", icon='LOCKED')
+        # Limit All Transforms button  
+        constraint_row.operator("boneminmax.limit_source_transforms", text="Lock Recorded", icon='CONSTRAINT')
         
         col.separator(factor=0.5)
         
         # Remove button
         col.operator("boneminmax.remove_drivers", text="Remove Drivers", icon='REMOVE')
+
 
 
 
@@ -401,3 +399,4 @@ def register():
 def unregister():
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)
+
