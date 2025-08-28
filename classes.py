@@ -1,6 +1,6 @@
 import bpy
 import re
-
+import math
 from .core_functions import (
     get_selected_pose_bones, ensure_euler_rotation, ensure_object_euler_rotation,
     detect_significant_changes, get_to_bones_data, set_to_bones_data,
@@ -127,8 +127,656 @@ class DriverRecorderProperties(bpy.types.PropertyGroup):
     # Path list data (JSON string)
     path_list_data: bpy.props.StringProperty(default="{}")
 
+class BONEMINMAX_OT_limit_source_transforms(bpy.types.Operator):
+    """Add limit constraints to source bone/object based on recorded min/max values"""
+    bl_idname = "boneminmax.limit_source_transforms"
+    bl_label = "Limit Source Transforms"
+    bl_description = "Add limit constraints to prevent source from going beyond recorded min/max values"
+    bl_options = {'REGISTER', 'UNDO'}
 
-# BONE OPERATORS
+    def execute(self, context):
+        props = context.scene.driver_recorder_props
+        
+        try:
+            if props.from_source_type == 'BONE':
+                success = self.limit_bone_transforms(props, context)
+            else:
+                success = self.limit_object_transforms(props, context)
+            
+            if success:
+                self.report({'INFO'}, "Limit constraints added successfully")
+            else:
+                self.report({'ERROR'}, "Failed to add limit constraints")
+                
+        except Exception as e:
+            self.report({'ERROR'}, f"Error adding constraints: {str(e)}")
+            return {'CANCELLED'}
+        
+        return {'FINISHED'}
+
+    def limit_bone_transforms(self, props, context):
+        """Add limit constraints to bone"""
+        if not props.from_armature or not props.from_bone:
+            self.report({'ERROR'}, "No source bone configured")
+            return False
+        
+        # Get armature and bone
+        armature = bpy.data.objects.get(props.from_armature)
+        if not armature or armature.type != 'ARMATURE':
+            self.report({'ERROR'}, f"Armature '{props.from_armature}' not found")
+            return False
+        
+        # Check if bone exists
+        if props.from_bone not in armature.pose.bones:
+            self.report({'ERROR'}, f"Bone '{props.from_bone}' not found in armature")
+            return False
+        
+        pose_bone = armature.pose.bones[props.from_bone]
+        
+        # Parse detected axis
+        axis_info = self.parse_axis_info(props.from_detected_axis)
+        if not axis_info:
+            self.report({'ERROR'}, f"Could not parse axis info: {props.from_detected_axis}")
+            return False
+        
+        # Add appropriate constraint
+        constraint_name = f"Limit_{axis_info['transform']}_{axis_info['axis']}"
+        
+        if axis_info['transform'] == 'LOC':
+            return self.add_location_limit(pose_bone, axis_info, props.from_min_location, props.from_max_location, constraint_name)
+        elif axis_info['transform'] == 'ROT':
+            return self.add_rotation_limit(pose_bone, axis_info, props.from_min_rotation, props.from_max_rotation, constraint_name)
+        elif axis_info['transform'] == 'SCALE':
+            self.report({'WARNING'}, "Scale limiting not yet implemented")
+            return False
+        
+        return False
+
+    def limit_object_transforms(self, props, context):
+        """Add limit constraints to object"""
+        if not props.from_object:
+            self.report({'ERROR'}, "No source object configured")
+            return False
+        
+        # Get object
+        obj = bpy.data.objects.get(props.from_object)
+        if not obj:
+            self.report({'ERROR'}, f"Object '{props.from_object}' not found")
+            return False
+        
+        # Parse detected axis
+        axis_info = self.parse_axis_info(props.from_object_detected_axis)
+        if not axis_info:
+            self.report({'ERROR'}, f"Could not parse axis info: {props.from_object_detected_axis}")
+            return False
+        
+        # Add appropriate constraint
+        constraint_name = f"Limit_{axis_info['transform']}_{axis_info['axis']}"
+        
+        if axis_info['transform'] == 'LOC':
+            return self.add_object_location_limit(obj, axis_info, props.from_object_min_location, props.from_object_max_location, constraint_name)
+        elif axis_info['transform'] == 'ROT':
+            return self.add_object_rotation_limit(obj, axis_info, props.from_object_min_rotation, props.from_object_max_rotation, constraint_name)
+        elif axis_info['transform'] == 'SCALE':
+            self.report({'WARNING'}, "Scale limiting not yet implemented for objects")
+            return False
+        
+        return False
+
+    def parse_axis_info(self, axis_string):
+        """Parse axis string like 'LOC X' or 'ROT Y' into components"""
+        if not axis_string:
+            return None
+        
+        parts = axis_string.split()
+        if len(parts) != 2:
+            return None
+        
+        transform_type = parts[0]  # LOC, ROT, SCALE
+        axis = parts[1]  # X, Y, Z
+        
+        # Map axis to index
+        axis_map = {'X': 0, 'Y': 1, 'Z': 2}
+        if axis not in axis_map:
+            return None
+        
+        return {
+            'transform': transform_type,
+            'axis': axis,
+            'index': axis_map[axis]
+        }
+
+    def get_sorted_values(self, min_val, max_val):
+        """Ensure min is actually smaller than max, swap if needed"""
+        if min_val > max_val:
+            return max_val, min_val  # Swap them
+        return min_val, max_val
+
+    def add_location_limit(self, pose_bone, axis_info, min_loc, max_loc, constraint_name):
+        """Add location limit constraint to pose bone"""
+        # Remove existing constraint with same name
+        if constraint_name in pose_bone.constraints:
+            pose_bone.constraints.remove(pose_bone.constraints[constraint_name])
+        
+        # Add limit location constraint
+        constraint = pose_bone.constraints.new('LIMIT_LOCATION')
+        constraint.name = constraint_name
+        
+        axis_idx = axis_info['index']
+        
+        # Get properly sorted min/max values
+        actual_min, actual_max = self.get_sorted_values(min_loc[axis_idx], max_loc[axis_idx])
+        
+        # Set limits for the specific axis
+        if axis_info['axis'] == 'X':
+            constraint.use_min_x = True
+            constraint.use_max_x = True
+            constraint.min_x = actual_min
+            constraint.max_x = actual_max
+        elif axis_info['axis'] == 'Y':
+            constraint.use_min_y = True
+            constraint.use_max_y = True
+            constraint.min_y = actual_min
+            constraint.max_y = actual_max
+        elif axis_info['axis'] == 'Z':
+            constraint.use_min_z = True
+            constraint.use_max_z = True
+            constraint.min_z = actual_min
+            constraint.max_z = actual_max
+        
+        constraint.owner_space = 'LOCAL'
+        
+        # Debug info
+        print(f"Added location limit to {pose_bone.name} {axis_info['axis']}: {actual_min:.3f} to {actual_max:.3f}")
+        return True
+
+    def add_rotation_limit(self, pose_bone, axis_info, min_rot, max_rot, constraint_name):
+        """Add rotation limit constraint to pose bone"""
+        # Remove existing constraint with same name
+        if constraint_name in pose_bone.constraints:
+            pose_bone.constraints.remove(pose_bone.constraints[constraint_name])
+        
+        # Force bone to use Euler rotation mode
+        pose_bone.rotation_mode = 'XYZ'
+        
+        # Add limit rotation constraint
+        constraint = pose_bone.constraints.new('LIMIT_ROTATION')
+        constraint.name = constraint_name
+        
+        axis_idx = axis_info['index']
+        
+        # Get properly sorted min/max values (in radians)
+        actual_min_rad, actual_max_rad = self.get_sorted_values(min_rot[axis_idx], max_rot[axis_idx])
+        
+        # Convert radians to degrees for the constraint
+        actual_min_deg = math.degrees(actual_min_rad)
+        actual_max_deg = math.degrees(actual_max_rad)
+        
+        # Set limits for the specific axis
+        if axis_info['axis'] == 'X':
+            constraint.use_limit_x = True
+            constraint.min_x = math.radians(actual_min_deg)
+            constraint.max_x = math.radians(actual_max_deg)
+        elif axis_info['axis'] == 'Y':
+            constraint.use_limit_y = True
+            constraint.min_y = math.radians(actual_min_deg)
+            constraint.max_y = math.radians(actual_max_deg)
+        elif axis_info['axis'] == 'Z':
+            constraint.use_limit_z = True
+            constraint.min_z = math.radians(actual_min_deg)
+            constraint.max_z = math.radians(actual_max_deg)
+        
+        # Set constraint properties for proper rotation handling
+        constraint.owner_space = 'LOCAL'
+        constraint.use_transform_limit = True
+        
+        # Debug info
+        print(f"Added rotation limit to {pose_bone.name} {axis_info['axis']}: {actual_min_deg:.1f}° to {actual_max_deg:.1f}°")
+        return True
+
+    def add_object_location_limit(self, obj, axis_info, min_loc, max_loc, constraint_name):
+        """Add location limit constraint to object"""
+        # Remove existing constraint with same name
+        for constraint in obj.constraints:
+            if constraint.name == constraint_name:
+                obj.constraints.remove(constraint)
+                break
+        
+        # Add limit location constraint
+        constraint = obj.constraints.new('LIMIT_LOCATION')
+        constraint.name = constraint_name
+        
+        axis_idx = axis_info['index']
+        
+        # Get properly sorted min/max values
+        actual_min, actual_max = self.get_sorted_values(min_loc[axis_idx], max_loc[axis_idx])
+        
+        # Set limits for the specific axis
+        if axis_info['axis'] == 'X':
+            constraint.use_min_x = True
+            constraint.use_max_x = True
+            constraint.min_x = actual_min
+            constraint.max_x = actual_max
+        elif axis_info['axis'] == 'Y':
+            constraint.use_min_y = True
+            constraint.use_max_y = True
+            constraint.min_y = actual_min
+            constraint.max_y = actual_max
+        elif axis_info['axis'] == 'Z':
+            constraint.use_min_z = True
+            constraint.use_max_z = True
+            constraint.min_z = actual_min
+            constraint.max_z = actual_max
+        
+        # Debug info
+        print(f"Added location limit to {obj.name} {axis_info['axis']}: {actual_min:.3f} to {actual_max:.3f}")
+        return True
+
+    def add_object_rotation_limit(self, obj, axis_info, min_rot, max_rot, constraint_name):
+        """Add rotation limit constraint to object"""
+        # Remove existing constraint with same name
+        for constraint in obj.constraints:
+            if constraint.name == constraint_name:
+                obj.constraints.remove(constraint)
+                break
+        
+        # Force object to use Euler rotation mode
+        obj.rotation_mode = 'XYZ'
+        
+        # Add limit rotation constraint
+        constraint = obj.constraints.new('LIMIT_ROTATION')
+        constraint.name = constraint_name
+        
+        axis_idx = axis_info['index']
+        
+        # Get properly sorted min/max values (in radians)
+        actual_min_rad, actual_max_rad = self.get_sorted_values(min_rot[axis_idx], max_rot[axis_idx])
+        
+        # Convert radians to degrees for the constraint
+        actual_min_deg = math.degrees(actual_min_rad)
+        actual_max_deg = math.degrees(actual_max_rad)
+        
+        # Set limits for the specific axis - Blender rotation constraints use RADIANS
+        if axis_info['axis'] == 'X':
+            constraint.use_limit_x = True
+            constraint.min_x = actual_min_rad
+            constraint.max_x = actual_max_rad
+        elif axis_info['axis'] == 'Y':
+            constraint.use_limit_y = True
+            constraint.min_y = actual_min_rad
+            constraint.max_y = actual_max_rad
+        elif axis_info['axis'] == 'Z':
+            constraint.use_limit_z = True
+            constraint.min_z = actual_min_rad
+            constraint.max_z = actual_max_rad
+        
+        # Set constraint properties for proper rotation handling
+        constraint.use_transform_limit = True
+        
+        # Debug info
+        print(f"Added rotation limit to {obj.name} {axis_info['axis']}: {actual_min_deg:.1f}° to {actual_max_deg:.1f}°")
+        return True
+
+
+class BONEMINMAX_OT_one_axis_source_limit(bpy.types.Operator):
+    """Lock source to move/rotate only on the detected axis, preventing movement on other axes"""
+    bl_idname = "boneminmax.one_axis_source_limit"
+    bl_label = "Lock to One Axis Only"
+    bl_description = "Lock source to only move/rotate on the detected axis, blocking all other axes"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        props = context.scene.driver_recorder_props
+        
+        try:
+            if props.from_source_type == 'BONE':
+                success = self.lock_bone_to_axis(props, context)
+            else:
+                success = self.lock_object_to_axis(props, context)
+            
+            if success:
+                self.report({'INFO'}, "One-axis constraint added successfully")
+            else:
+                self.report({'ERROR'}, "Failed to add one-axis constraint")
+                
+        except Exception as e:
+            self.report({'ERROR'}, f"Error adding one-axis constraint: {str(e)}")
+            return {'CANCELLED'}
+        
+        return {'FINISHED'}
+
+    def lock_bone_to_axis(self, props, context):
+        """Add constraints to lock bone to single axis movement"""
+        if not props.from_armature or not props.from_bone:
+            self.report({'ERROR'}, "No source bone configured")
+            return False
+        
+        # Get armature and bone
+        armature = bpy.data.objects.get(props.from_armature)
+        if not armature or armature.type != 'ARMATURE':
+            self.report({'ERROR'}, f"Armature '{props.from_armature}' not found")
+            return False
+        
+        if props.from_bone not in armature.pose.bones:
+            self.report({'ERROR'}, f"Bone '{props.from_bone}' not found in armature")
+            return False
+        
+        pose_bone = armature.pose.bones[props.from_bone]
+        
+        # Parse detected axis
+        axis_info = self.parse_axis_info(props.from_detected_axis)
+        if not axis_info:
+            self.report({'ERROR'}, f"Could not parse axis info: {props.from_detected_axis}")
+            return False
+        
+        if axis_info['transform'] == 'LOC':
+            return self.add_bone_location_lock(pose_bone, axis_info, props.from_min_location, props.from_max_location)
+        elif axis_info['transform'] == 'ROT':
+            return self.add_bone_rotation_lock(pose_bone, axis_info, props.from_min_rotation, props.from_max_rotation)
+        elif axis_info['transform'] == 'SCALE':
+            self.report({'WARNING'}, "Scale locking not yet implemented")
+            return False
+        
+        return False
+
+    def lock_object_to_axis(self, props, context):
+        """Add constraints to lock object to single axis movement"""
+        if not props.from_object:
+            self.report({'ERROR'}, "No source object configured")
+            return False
+        
+        obj = bpy.data.objects.get(props.from_object)
+        if not obj:
+            self.report({'ERROR'}, f"Object '{props.from_object}' not found")
+            return False
+        
+        # Parse detected axis
+        axis_info = self.parse_axis_info(props.from_object_detected_axis)
+        if not axis_info:
+            self.report({'ERROR'}, f"Could not parse axis info: {props.from_object_detected_axis}")
+            return False
+        
+        if axis_info['transform'] == 'LOC':
+            return self.add_object_location_lock(obj, axis_info, props.from_object_min_location, props.from_object_max_location)
+        elif axis_info['transform'] == 'ROT':
+            return self.add_object_rotation_lock(obj, axis_info, props.from_object_min_rotation, props.from_object_max_rotation)
+        elif axis_info['transform'] == 'SCALE':
+            self.report({'WARNING'}, "Scale locking not yet implemented for objects")
+            return False
+        
+        return False
+
+    def parse_axis_info(self, axis_string):
+        """Parse axis string like 'LOC X' or 'ROT Y' into components"""
+        if not axis_string:
+            return None
+        
+        parts = axis_string.split()
+        if len(parts) != 2:
+            return None
+        
+        transform_type = parts[0]  # LOC, ROT, SCALE
+        axis = parts[1]  # X, Y, Z
+        
+        axis_map = {'X': 0, 'Y': 1, 'Z': 2}
+        if axis not in axis_map:
+            return None
+        
+        return {
+            'transform': transform_type,
+            'axis': axis,
+            'index': axis_map[axis]
+        }
+
+    def get_sorted_values(self, min_val, max_val):
+        """Ensure min is actually smaller than max"""
+        if min_val > max_val:
+            return max_val, min_val
+        return min_val, max_val
+
+    def add_bone_location_lock(self, pose_bone, axis_info, min_loc, max_loc):
+        """Lock bone location to only the detected axis"""
+        constraint_name = f"OneAxis_LOC_{axis_info['axis']}"
+        
+        # Remove existing constraint
+        if constraint_name in pose_bone.constraints:
+            pose_bone.constraints.remove(pose_bone.constraints[constraint_name])
+        
+        # Add limit location constraint that locks OTHER axes
+        constraint = pose_bone.constraints.new('LIMIT_LOCATION')
+        constraint.name = constraint_name
+        constraint.owner_space = 'LOCAL'
+        
+        # Get current position to use as lock point for other axes
+        current_loc = pose_bone.location.copy()
+        
+        # Get sorted min/max for the active axis
+        axis_idx = axis_info['index']
+        actual_min, actual_max = self.get_sorted_values(min_loc[axis_idx], max_loc[axis_idx])
+        
+        # Lock all axes except the detected one
+        if axis_info['axis'] != 'X':
+            # Lock X axis to current position
+            constraint.use_min_x = True
+            constraint.use_max_x = True
+            constraint.min_x = current_loc[0]
+            constraint.max_x = current_loc[0]
+        else:
+            # Allow X axis movement within recorded range
+            constraint.use_min_x = True
+            constraint.use_max_x = True
+            constraint.min_x = actual_min
+            constraint.max_x = actual_max
+        
+        if axis_info['axis'] != 'Y':
+            # Lock Y axis to current position
+            constraint.use_min_y = True
+            constraint.use_max_y = True
+            constraint.min_y = current_loc[1]
+            constraint.max_y = current_loc[1]
+        else:
+            # Allow Y axis movement within recorded range
+            constraint.use_min_y = True
+            constraint.use_max_y = True
+            constraint.min_y = actual_min
+            constraint.max_y = actual_max
+        
+        if axis_info['axis'] != 'Z':
+            # Lock Z axis to current position
+            constraint.use_min_z = True
+            constraint.use_max_z = True
+            constraint.min_z = current_loc[2]
+            constraint.max_z = current_loc[2]
+        else:
+            # Allow Z axis movement within recorded range
+            constraint.use_min_z = True
+            constraint.use_max_z = True
+            constraint.min_z = actual_min
+            constraint.max_z = actual_max
+        
+        print(f"Locked {pose_bone.name} to {axis_info['axis']} axis only (range: {actual_min:.3f} to {actual_max:.3f})")
+        return True
+
+    def add_bone_rotation_lock(self, pose_bone, axis_info, min_rot, max_rot):
+        """Lock bone rotation to only the detected axis"""
+        constraint_name = f"OneAxis_ROT_{axis_info['axis']}"
+        
+        # Remove existing constraint
+        if constraint_name in pose_bone.constraints:
+            pose_bone.constraints.remove(pose_bone.constraints[constraint_name])
+        
+        # Force bone to use Euler rotation mode
+        pose_bone.rotation_mode = 'XYZ'
+        
+        # Add limit rotation constraint that locks OTHER axes
+        constraint = pose_bone.constraints.new('LIMIT_ROTATION')
+        constraint.name = constraint_name
+        constraint.owner_space = 'LOCAL'
+        constraint.use_transform_limit = True
+        
+        # Get current rotation to use as lock point for other axes
+        current_rot = pose_bone.rotation_euler.copy()
+        
+        # Get sorted min/max for the active axis (in radians)
+        axis_idx = axis_info['index']
+        actual_min_rad, actual_max_rad = self.get_sorted_values(min_rot[axis_idx], max_rot[axis_idx])
+        
+        # Lock all axes except the detected one
+        if axis_info['axis'] != 'X':
+            # Lock X rotation to current position
+            constraint.use_limit_x = True
+            constraint.min_x = current_rot[0]
+            constraint.max_x = current_rot[0]
+        else:
+            # Allow X rotation within recorded range
+            constraint.use_limit_x = True
+            constraint.min_x = actual_min_rad
+            constraint.max_x = actual_max_rad
+        
+        if axis_info['axis'] != 'Y':
+            # Lock Y rotation to current position
+            constraint.use_limit_y = True
+            constraint.min_y = current_rot[1]
+            constraint.max_y = current_rot[1]
+        else:
+            # Allow Y rotation within recorded range
+            constraint.use_limit_y = True
+            constraint.min_y = actual_min_rad
+            constraint.max_y = actual_max_rad
+        
+        if axis_info['axis'] != 'Z':
+            # Lock Z rotation to current position
+            constraint.use_limit_z = True
+            constraint.min_z = current_rot[2]
+            constraint.max_z = current_rot[2]
+        else:
+            # Allow Z rotation within recorded range
+            constraint.use_limit_z = True
+            constraint.min_z = actual_min_rad
+            constraint.max_z = actual_max_rad
+        
+        actual_min_deg = math.degrees(actual_min_rad)
+        actual_max_deg = math.degrees(actual_max_rad)
+        print(f"Locked {pose_bone.name} to {axis_info['axis']} rotation only (range: {actual_min_deg:.1f}° to {actual_max_deg:.1f}°)")
+        return True
+
+    def add_object_location_lock(self, obj, axis_info, min_loc, max_loc):
+        """Lock object location to only the detected axis"""
+        constraint_name = f"OneAxis_LOC_{axis_info['axis']}"
+        
+        # Remove existing constraint
+        for constraint in obj.constraints:
+            if constraint.name == constraint_name:
+                obj.constraints.remove(constraint)
+                break
+        
+        # Add limit location constraint
+        constraint = obj.constraints.new('LIMIT_LOCATION')
+        constraint.name = constraint_name
+        
+        # Get current position
+        current_loc = obj.location.copy()
+        
+        # Get sorted min/max for the active axis
+        axis_idx = axis_info['index']
+        actual_min, actual_max = self.get_sorted_values(min_loc[axis_idx], max_loc[axis_idx])
+        
+        # Lock all axes except the detected one
+        if axis_info['axis'] != 'X':
+            constraint.use_min_x = True
+            constraint.use_max_x = True
+            constraint.min_x = current_loc[0]
+            constraint.max_x = current_loc[0]
+        else:
+            constraint.use_min_x = True
+            constraint.use_max_x = True
+            constraint.min_x = actual_min
+            constraint.max_x = actual_max
+        
+        if axis_info['axis'] != 'Y':
+            constraint.use_min_y = True
+            constraint.use_max_y = True
+            constraint.min_y = current_loc[1]
+            constraint.max_y = current_loc[1]
+        else:
+            constraint.use_min_y = True
+            constraint.use_max_y = True
+            constraint.min_y = actual_min
+            constraint.max_y = actual_max
+        
+        if axis_info['axis'] != 'Z':
+            constraint.use_min_z = True
+            constraint.use_max_z = True
+            constraint.min_z = current_loc[2]
+            constraint.max_z = current_loc[2]
+        else:
+            constraint.use_min_z = True
+            constraint.use_max_z = True
+            constraint.min_z = actual_min
+            constraint.max_z = actual_max
+        
+        print(f"Locked {obj.name} to {axis_info['axis']} axis only (range: {actual_min:.3f} to {actual_max:.3f})")
+        return True
+
+    def add_object_rotation_lock(self, obj, axis_info, min_rot, max_rot):
+        """Lock object rotation to only the detected axis"""
+        constraint_name = f"OneAxis_ROT_{axis_info['axis']}"
+        
+        # Remove existing constraint
+        for constraint in obj.constraints:
+            if constraint.name == constraint_name:
+                obj.constraints.remove(constraint)
+                break
+        
+        # Force object to use Euler rotation mode
+        obj.rotation_mode = 'XYZ'
+        
+        # Add limit rotation constraint
+        constraint = obj.constraints.new('LIMIT_ROTATION')
+        constraint.name = constraint_name
+        constraint.use_transform_limit = True
+        
+        # Get current rotation
+        current_rot = obj.rotation_euler.copy()
+        
+        # Get sorted min/max for the active axis (in radians)
+        axis_idx = axis_info['index']
+        actual_min_rad, actual_max_rad = self.get_sorted_values(min_rot[axis_idx], max_rot[axis_idx])
+        
+        # Lock all axes except the detected one
+        if axis_info['axis'] != 'X':
+            constraint.use_limit_x = True
+            constraint.min_x = current_rot[0]
+            constraint.max_x = current_rot[0]
+        else:
+            constraint.use_limit_x = True
+            constraint.min_x = actual_min_rad
+            constraint.max_x = actual_max_rad
+        
+        if axis_info['axis'] != 'Y':
+            constraint.use_limit_y = True
+            constraint.min_y = current_rot[1]
+            constraint.max_y = current_rot[1]
+        else:
+            constraint.use_limit_y = True
+            constraint.min_y = actual_min_rad
+            constraint.max_y = actual_max_rad
+        
+        if axis_info['axis'] != 'Z':
+            constraint.use_limit_z = True
+            constraint.min_z = current_rot[2]
+            constraint.max_z = current_rot[2]
+        else:
+            constraint.use_limit_z = True
+            constraint.min_z = actual_min_rad
+            constraint.max_z = actual_max_rad
+        
+        actual_min_deg = math.degrees(actual_min_rad)
+        actual_max_deg = math.degrees(actual_max_rad)
+        print(f"Locked {obj.name} to {axis_info['axis']} rotation only (range: {actual_min_deg:.1f}° to {actual_max_deg:.1f}°)")
+        return True
+
+
 class BONEMINMAX_OT_record_from_min(bpy.types.Operator):
     bl_idname = "boneminmax.record_from_min"
     bl_label = "Record Min Position"
@@ -828,6 +1476,73 @@ class BONEMINMAX_OT_set_target_type(bpy.types.Operator):
         props.target_type = self.target_type
         return {'FINISHED'}
 
+class BONEMINMAX_OT_clear_source(bpy.types.Operator):
+    """Clear all source configuration"""
+    bl_idname = "boneminmax.clear_source"
+    bl_label = "Clear Source"
+    bl_options = {'REGISTER', 'UNDO'}
+    
+    def execute(self, context):
+        props = context.scene.driver_recorder_props
+        
+        # Clear bone source data
+        props.from_bone = ""
+        props.from_has_min = False
+        props.from_has_max = False
+        props.from_detected_axis = ""
+        props.from_min_rotation = (0.0, 0.0, 0.0)
+        props.from_max_rotation = (0.0, 0.0, 0.0)
+        props.from_min_location = (0.0, 0.0, 0.0)
+        props.from_max_location = (0.0, 0.0, 0.0)
+        props.from_min_scale = (1.0, 1.0, 1.0)
+        props.from_max_scale = (1.0, 1.0, 1.0)
+        
+        # Clear object source data
+        props.from_object = ""
+        props.from_object_has_min = False
+        props.from_object_has_max = False
+        props.from_object_detected_axis = ""
+        props.from_object_min_rotation = (0.0, 0.0, 0.0)
+        props.from_object_max_rotation = (0.0, 0.0, 0.0)
+        props.from_object_min_location = (0.0, 0.0, 0.0)
+        props.from_object_max_location = (0.0, 0.0, 0.0)
+        props.from_object_min_scale = (1.0, 1.0, 1.0)
+        props.from_object_max_scale = (1.0, 1.0, 1.0)
+        
+        self.report({'INFO'}, "Source configuration cleared")
+        return {'FINISHED'}
+
+
+class BONEMINMAX_OT_clear_targets(bpy.types.Operator):
+    """Clear all target configuration"""
+    bl_idname = "boneminmax.clear_targets"
+    bl_label = "Clear Targets"
+    bl_options = {'REGISTER', 'UNDO'}
+    
+    def execute(self, context):
+        props = context.scene.driver_recorder_props
+        
+        # Clear pose targets
+        props.to_bones_data = ""
+        
+        # Clear shapekey targets
+        props.shapekey_list_data = ""
+        props.shapekey_target_object = ""
+        props.shapekey_name = ""
+        props.shapekey_min_value = 0.0
+        props.shapekey_max_value = 1.0
+        
+        # Clear path targets
+        props.path_list_data = ""
+        props.custom_path_input = ""
+        props.path_min_value = 0.0
+        props.path_max_value = 1.0
+        props.path_false_value = 0.0
+        props.path_true_value = 1.0
+        
+        self.report({'INFO'}, "Target configuration cleared")
+        return {'FINISHED'}
+
 
 # List of all classes for registration
 classes = (
@@ -847,6 +1562,10 @@ classes = (
     BONEMINMAX_OT_remove_drivers,
     BONEMINMAX_OT_clear_all,
     BONEMINMAX_OT_set_target_type,
+    BONEMINMAX_OT_clear_targets,
+    BONEMINMAX_OT_clear_source,
+    BONEMINMAX_OT_limit_source_transforms,
+    BONEMINMAX_OT_one_axis_source_limit
 )
 
 
