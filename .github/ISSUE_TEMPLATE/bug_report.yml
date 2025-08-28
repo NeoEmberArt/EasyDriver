@@ -1,0 +1,50 @@
+name: 🐞 Bug Report
+description: Report a bug or malfunction in EasyDriver
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: EasyDriver Version
+      description: Which version of the addon are you using? (e.g., 1.0.0)
+      placeholder: 1.0.0
+    validations:
+      required: true
+
+  - type: input
+    id: blender_version
+    attributes:
+      label: Blender Version
+      description: Which version of Blender are you using? (e.g., 4.5.0)
+      placeholder: 4.5.0
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description of the Bug
+      description: Describe what went wrong.
+      placeholder: The addon crashes when I...
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to Reproduce
+      description: How can others reproduce the issue?
+      placeholder: |
+        1. Open Blender
+        2. Enable EasyDriver
+        3. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Error Messages / Console Output
+      description: Paste any relevant error messages from Blender’s console.
+      render: shell
