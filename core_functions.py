@@ -8,6 +8,7 @@ import bpy
 import re
 import math
 
+#combined code - mistakenly merged working code for only material nodes
 def createDriver(armature_name, from_path, fromMin, fromMax, to_path, toMin, toMax, selfRotation=False, isDegrees=False):
     """Create a driver from one bone/property to another with linear mapping and clamping."""
     
@@ -34,94 +35,219 @@ def createDriver(armature_name, from_path, fromMin, fromMax, to_path, toMin, toM
         target_data_path = None
         to_index = -1
         
-        # === MATERIAL NODE INPUT DETECTION ===
-        print("Testing material node input pattern...")
-        material_pattern = r'materials\["([^"]+)"\]\.node_tree\.nodes\["([^"]+)"\]\.inputs\[(\d+)\]\.default_value'
-        material_match = re.search(material_pattern, to_path)
+        # === PARSE TARGET PATH ===
+        print("\n=== PARSING TARGET PATH ===")
         
-        if material_match:
-            print("✓ MATERIAL NODE INPUT DETECTED!")
-            material_name, node_name, input_index = material_match.groups()
-            input_index = int(input_index)
+        # Material node input/output patterns
+        if to_path.startswith('bpy.data.materials["'):
+            print("Testing material patterns...")
             
-            print(f"  Material: '{material_name}'")
-            print(f"  Node: '{node_name}'")
-            print(f"  Input Index: {input_index}")
+            # Material node input
+            material_input_match = re.match(r'bpy\.data\.materials\["([^"]+)"\]\.node_tree\.nodes\["([^"]+)"\]\.inputs\[(\d+)\]\.default_value', to_path)
+            if material_input_match:
+                print("✓ MATERIAL NODE INPUT DETECTED!")
+                material_name, node_name, input_index = material_input_match.groups()
+                input_index = int(input_index)
+                
+                print(f"  Material: '{material_name}', Node: '{node_name}', Input: {input_index}")
+                
+                if material_name not in bpy.data.materials:
+                    print(f"ERROR: Material '{material_name}' not found!")
+                    return False
+                
+                target_material = bpy.data.materials[material_name]
+                if not target_material.node_tree:
+                    print(f"ERROR: Material '{material_name}' has no node tree!")
+                    return False
+                
+                if node_name not in target_material.node_tree.nodes:
+                    print(f"ERROR: Node '{node_name}' not found!")
+                    return False
+                
+                target_node = target_material.node_tree.nodes[node_name]
+                if input_index >= len(target_node.inputs):
+                    print(f"ERROR: Input index {input_index} out of range!")
+                    return False
+                
+                target_data_block = target_material.node_tree
+                target_data_path = f'nodes["{node_name}"].inputs[{input_index}].default_value'
+                to_index = -1
+                
+            # Material node output
+            elif 'outputs[' in to_path:
+                material_output_match = re.match(r'bpy\.data\.materials\["([^"]+)"\]\.node_tree\.nodes\["([^"]+)"\]\.outputs\[(\d+)\]\.default_value', to_path)
+                if material_output_match:
+                    print("✓ MATERIAL NODE OUTPUT DETECTED!")
+                    material_name, node_name, output_index = material_output_match.groups()
+                    output_index = int(output_index)
+                    
+                    target_material = bpy.data.materials[material_name]
+                    target_data_block = target_material.node_tree
+                    target_data_path = f'nodes["{node_name}"].outputs[{output_index}].default_value'
+                    to_index = -1
+                else:
+                    print("ERROR: Invalid material output format")
+                    return False
             
-            # Get the material
-            if material_name not in bpy.data.materials:
-                print(f"ERROR: Material '{material_name}' not found!")
+            # General material property
+            else:
+                general_material_match = re.match(r'bpy\.data\.materials\["([^"]+)"\]\.(.+)', to_path)
+                if general_material_match:
+                    print("✓ GENERAL MATERIAL PROPERTY DETECTED!")
+                    material_name, data_path = general_material_match.groups()
+                    
+                    target_material = bpy.data.materials[material_name]
+                    target_data_block = target_material
+                    
+                    # Check for array index
+                    array_match = re.match(r'(.+)\[(\d+)\]$', data_path)
+                    if array_match:
+                        target_data_path = array_match.group(1)
+                        to_index = int(array_match.group(2))
+                    else:
+                        target_data_path = data_path
+                        to_index = -1
+                else:
+                    print("ERROR: Invalid material path format")
+                    return False
+        
+        # Armature data paths
+        elif to_path.startswith('bpy.data.armatures["'):
+            print("✓ ARMATURE PROPERTY DETECTED!")
+            armature_match = re.match(r'bpy\.data\.armatures\["([^"]+)"\]\.(.+)', to_path)
+            if not armature_match:
+                print("ERROR: Invalid armature path format")
                 return False
             
-            target_material = bpy.data.materials[material_name]
-            print(f"  ✓ Material found: {target_material}")
+            armature_name_target, data_path = armature_match.groups()
             
-            # Check node tree
-            if not target_material.node_tree:
-                print(f"ERROR: Material '{material_name}' has no node tree!")
-                return False
-            print(f"  ✓ Node tree exists")
-            
-            # Get the node
-            if node_name not in target_material.node_tree.nodes:
-                print(f"ERROR: Node '{node_name}' not found!")
-                print(f"  Available nodes: {list(target_material.node_tree.nodes.keys())}")
+            if armature_name_target not in bpy.data.armatures:
+                print(f"ERROR: Armature '{armature_name_target}' not found!")
                 return False
             
-            target_node = target_material.node_tree.nodes[node_name]
-            print(f"  ✓ Node found: {target_node}")
+            target_armature = bpy.data.armatures[armature_name_target]
+            target_data_block = target_armature
             
-            # Check input index
-            if input_index >= len(target_node.inputs):
-                print(f"ERROR: Input index {input_index} out of range!")
-                print(f"  Available inputs: {len(target_node.inputs)}")
+            # Check for array index
+            array_match = re.match(r'(.+)\[(\d+)\]$', data_path)
+            if array_match:
+                target_data_path = array_match.group(1)
+                to_index = int(array_match.group(2))
+            else:
+                target_data_path = data_path
+                to_index = -1
+        
+        # Object properties
+        elif to_path.startswith('bpy.data.objects["'):
+            print("✓ OBJECT PROPERTY DETECTED!")
+            obj_match = re.match(r'bpy\.data\.objects\["([^"]+)"\]\.(.+)', to_path)
+            if not obj_match:
+                print("ERROR: Invalid object path format")
                 return False
             
-            print(f"  ✓ Input {input_index} exists")
+            obj_name, data_path = obj_match.groups()
             
-            # Set up target
-            target_data_block = target_material.node_tree
-            target_data_path = f'nodes["{node_name}"].inputs[{input_index}].default_value'
+            if obj_name not in bpy.data.objects:
+                print(f"ERROR: Object '{obj_name}' not found!")
+                return False
+            
+            target_obj = bpy.data.objects[obj_name]
+            target_data_block = target_obj
+            
+            # Check for array index
+            array_match = re.match(r'(.+)\[(\d+)\]$', data_path)
+            if array_match:
+                target_data_path = array_match.group(1)
+                to_index = int(array_match.group(2))
+            else:
+                target_data_path = data_path
+                to_index = -1
+        
+        # Shapekey paths
+        elif ".key_blocks[" in to_path:
+            print("✓ SHAPEKEY DETECTED!")
+            match_to = re.match(r'(.+)\.data\.shape_keys\.key_blocks\["([^"]+)"\]\.value', to_path)
+            if not match_to:
+                print("ERROR: Invalid shapekey path format")
+                return False
+            
+            obj_name, shapekey_name = match_to.groups()
+            
+            if obj_name not in bpy.data.objects:
+                print(f"ERROR: Object '{obj_name}' not found!")
+                return False
+            
+            target_obj = bpy.data.objects[obj_name]
+            if not target_obj.data.shape_keys:
+                print(f"ERROR: Object '{obj_name}' has no shape keys!")
+                return False
+            
+            target_data_block = target_obj.data.shape_keys
+            target_data_path = f'key_blocks["{shapekey_name}"].value'
             to_index = -1
+        
+        # Bone transform paths
+        elif ".pose.bones[" in to_path and to_path.count('[') == 2:
+            print("✓ BONE TRANSFORM DETECTED!")
+            match_to = re.match(r'(.+)\.pose\.bones\["([^"]+)"\]\.([a-zA-Z_]+)\[(\d+)\]', to_path)
+            if not match_to:
+                print("ERROR: Invalid bone transform path format")
+                return False
+
+            obj_name, to_bone, to_prop, to_index = match_to.groups()
+            to_index = int(to_index)
             
-            print(f"  ✓ Target setup complete")
-            print(f"    Data block: {target_data_block}")
-            print(f"    Data path: {target_data_path}")
+            if obj_name not in bpy.data.objects:
+                print(f"ERROR: Armature '{obj_name}' not found!")
+                return False
             
+            target_obj = bpy.data.objects[obj_name]
+            target_data_block = target_obj
+            target_data_path = f'pose.bones["{to_bone}"].{to_prop}'
+        
         else:
-            print("✗ Material node input pattern not matched")
-            print("ERROR: Unsupported path format for now")
+            print("ERROR: Unsupported target path format")
             return False
+
+        print(f"✓ Target parsed - Block: {target_data_block}, Path: {target_data_path}, Index: {to_index}")
 
         # === PARSE SOURCE PATH ===
         print("\n=== PARSING SOURCE PATH ===")
         
-        # Try object source (like Cube.location[2])
-        obj_match = re.match(r'(.+)\.([a-zA-Z_]+)\[(\d+)\]', from_path)
-        if obj_match:
-            from_obj_name, from_prop, from_index = obj_match.groups()
+        is_bone_source = False
+        from_obj_name = None
+        from_bone = None
+        from_prop = None
+        from_index = None
+        
+        # Try bone source first
+        bone_match = re.match(r'(.+)\.pose\.bones\["([^"]+)"\]\.([a-zA-Z_]+)\[(\d+)\]', from_path)
+        if bone_match:
+            print("✓ BONE SOURCE DETECTED!")
+            armature_name_from_path, from_bone, from_prop, from_index = bone_match.groups()
             from_index = int(from_index)
-            print(f"✓ Object source detected:")
-            print(f"  Object: '{from_obj_name}'")
-            print(f"  Property: '{from_prop}'")
-            print(f"  Index: {from_index}")
-            
-            # Check if object exists
-            if from_obj_name not in bpy.data.objects:
-                print(f"ERROR: Source object '{from_obj_name}' not found!")
-                return False
-            
-            source_obj = bpy.data.objects[from_obj_name]
-            print(f"  ✓ Source object found: {source_obj}")
-            
+            is_bone_source = True
+            print(f"  Bone: {from_bone}, Property: {from_prop}, Index: {from_index}")
         else:
-            print("ERROR: Unsupported source path format")
-            return False
+            # Try object source
+            obj_match = re.match(r'(.+)\.([a-zA-Z_]+)\[(\d+)\]', from_path)
+            if obj_match:
+                print("✓ OBJECT SOURCE DETECTED!")
+                from_obj_name, from_prop, from_index = obj_match.groups()
+                from_index = int(from_index)
+                is_bone_source = False
+                print(f"  Object: {from_obj_name}, Property: {from_prop}, Index: {from_index}")
+            else:
+                print("ERROR: Invalid source path format")
+                return False
 
         # === REMOVE OLD DRIVER ===
         print("\n=== REMOVING OLD DRIVER ===")
         try:
-            target_data_block.driver_remove(target_data_path)
+            if to_index == -1:
+                target_data_block.driver_remove(target_data_path)
+            else:
+                target_data_block.driver_remove(target_data_path, to_index)
             print("✓ Old driver removed")
         except:
             print("✓ No old driver to remove")
@@ -129,7 +255,11 @@ def createDriver(armature_name, from_path, fromMin, fromMax, to_path, toMin, toM
         # === ADD NEW DRIVER ===
         print("\n=== ADDING NEW DRIVER ===")
         try:
-            fcurve = target_data_block.driver_add(target_data_path)
+            if to_index == -1:
+                fcurve = target_data_block.driver_add(target_data_path)
+            else:
+                fcurve = target_data_block.driver_add(target_data_path, to_index)
+                
             if fcurve is None:
                 print("ERROR: driver_add returned None")
                 return False
@@ -150,17 +280,50 @@ def createDriver(armature_name, from_path, fromMin, fromMax, to_path, toMin, toM
         # Add variable
         var = driver.variables.new()
         var.name = "drv"
-        var.type = 'SINGLE_PROP'
         
-        targ = var.targets[0]
-        targ.id = source_obj
-        targ.data_path = f"{from_prop}[{from_index}]"
+        if is_bone_source:
+            print("✓ Configuring bone source...")
+            var.type = 'TRANSFORMS'
+            targ = var.targets[0]
+            
+            if armature_name not in bpy.data.objects:
+                print(f"ERROR: Source armature '{armature_name}' not found!")
+                return False
+            
+            source_armature = bpy.data.objects[armature_name]
+            targ.id = source_armature
+            targ.bone_target = from_bone
+
+            # Set transform type based on property and index
+            if from_prop == "location":
+                if from_index == 0: targ.transform_type = 'LOC_X'
+                elif from_index == 1: targ.transform_type = 'LOC_Y'
+                elif from_index == 2: targ.transform_type = 'LOC_Z'
+            elif from_prop == "rotation_euler":
+                if from_index == 0: targ.transform_type = 'ROT_X'
+                elif from_index == 1: targ.transform_type = 'ROT_Y'
+                elif from_index == 2: targ.transform_type = 'ROT_Z'
+            elif from_prop == "scale":
+                if from_index == 0: targ.transform_type = 'SCALE_X'
+                elif from_index == 1: targ.transform_type = 'SCALE_Y'
+                elif from_index == 2: targ.transform_type = 'SCALE_Z'
+
+            targ.transform_space = 'LOCAL_SPACE'
+            
+        else:
+            print("✓ Configuring object source...")
+            var.type = 'SINGLE_PROP'
+            targ = var.targets[0]
+            
+            if from_obj_name not in bpy.data.objects:
+                print(f"ERROR: Source object '{from_obj_name}' not found!")
+                return False
+            
+            source_obj = bpy.data.objects[from_obj_name]
+            targ.id = source_obj
+            targ.data_path = f"{from_prop}[{from_index}]"
         
-        print(f"✓ Variable configured:")
-        print(f"  Name: {var.name}")
-        print(f"  Type: {var.type}")
-        print(f"  Target: {targ.id}")
-        print(f"  Data path: {targ.data_path}")
+        print(f"✓ Variable configured: {var.name} ({var.type})")
 
         # === CREATE EXPRESSION ===
         print("\n=== CREATING EXPRESSION ===")
@@ -181,8 +344,12 @@ def createDriver(armature_name, from_path, fromMin, fromMax, to_path, toMin, toM
         print("\n=== FINALIZING ===")
         bpy.context.view_layer.update()
         
+        # Success message
+        source_desc = f"{from_bone}.{from_prop}[{from_index}]" if is_bone_source else f"{from_obj_name}.{from_prop}[{from_index}]"
+        target_desc = f"{target_data_path}" + (f"[{to_index}]" if to_index != -1 else "")
+        
         print(f"✓ SUCCESS: Driver created!")
-        print(f"  {from_obj_name}.{from_prop}[{from_index}] -> {target_data_path}")
+        print(f"  {source_desc} -> {target_desc}")
         print("=== DRIVER CREATION COMPLETE ===")
         
         return True
