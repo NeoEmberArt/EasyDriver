@@ -1,5 +1,5 @@
 # Easy Driver - Technical Rigging Made Simple As Heck!
-![Version](https://img.shields.io/badge/version-1.1.0-blue.svg)
+![Version](https://img.shields.io/badge/version-1.2.1-blue.svg)
 ![Blender](https://img.shields.io/badge/Blender-4.5%2B-orange.svg)
 ![License](https://img.shields.io/badge/license-MIT-yellow.svg)
 
