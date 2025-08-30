@@ -1,8 +1,7 @@
 import bpy
 from .core_functions import (
-    get_to_bones_data, get_shapekey_list_data, get_path_list_data
+    get_to_bones_data, get_shapekey_list_data, get_path_list_data, auto_detect_path_type
 )
-
 
 class BONEMINMAX_PT_main_panel(bpy.types.Panel):
     bl_label = "Easy Driver"
@@ -32,7 +31,7 @@ class BONEMINMAX_PT_main_panel(bpy.types.Panel):
         self.draw_actions_panel(layout, props, context)
 
     def draw_source_panel(self, layout, props, context):
-        """Draw simplified source configuration."""
+        """Draw simplified source configuration with automatic mode detection."""
         # Collapsible source section
         box = layout.box()
         header = box.row()
@@ -58,16 +57,44 @@ class BONEMINMAX_PT_main_panel(bpy.types.Panel):
         # Content
         col = box.column()
         
-        # Source type tabs
+        # Record buttons (no source type selection needed)
         row = col.row(align=True)
-        row.prop(props, "from_source_type", expand=True)
+        row.scale_y = 1.2
+        
+        row.operator("boneminmax.record_from_min", text="Record Min")
+        row.operator("boneminmax.record_from_max", text="Record Max")
         
         col.separator(factor=0.5)
         
-        if props.from_source_type == 'BONE':
-            self.draw_bone_source(col, props, context)
-        else:
-            self.draw_object_source(col, props, context)
+        # Status display - show appropriate info based on what's recorded
+        if props.from_bone or props.from_object:
+            info = col.box()
+            info.scale_y = 0.9
+            
+            # Show bone or object name with appropriate icon
+            row = info.row()
+            if props.from_bone:
+                row.label(text=f"{props.from_armature}: {props.from_bone}", icon='BONE_DATA')
+            elif props.from_object:
+                row.label(text=props.from_object, icon='OBJECT_DATA')
+            
+            # Progress indicators
+            row = info.row(align=True)
+            
+            # Min/Max status (check appropriate properties)
+            min_col = row.column()
+            has_min = props.from_has_min if props.from_bone else props.from_object_has_min
+            min_col.label(text="Min", icon='KEYFRAME_HLT' if has_min else 'KEYFRAME')
+            
+            max_col = row.column()
+            has_max = props.from_has_max if props.from_bone else props.from_object_has_max
+            max_col.label(text="Max", icon='KEYFRAME_HLT' if has_max else 'KEYFRAME')
+            
+            # Detected axis
+            detected_axis = props.from_detected_axis if props.from_bone else props.from_object_detected_axis
+            if detected_axis:
+                axis_col = row.column()
+                axis_col.label(text=detected_axis, icon='ORIENTATION_GIMBAL')
 
     def draw_target_panel(self, layout, props, context):
         """Draw simplified target configuration."""
@@ -100,7 +127,7 @@ class BONEMINMAX_PT_main_panel(bpy.types.Panel):
         
         # Custom Pose button
         pose_btn = row.operator("boneminmax.set_target_type", text="Pose", 
-                               depress=(props.target_type == 'CUSTOM_POSE'))
+                            depress=(props.target_type == 'CUSTOM_POSE'))
         pose_btn.target_type = 'CUSTOM_POSE'
         
         # Shapekey List button
@@ -110,7 +137,7 @@ class BONEMINMAX_PT_main_panel(bpy.types.Panel):
         
         # Path List button
         path_btn = row.operator("boneminmax.set_target_type", text="Custom Paths",
-                               depress=(props.target_type == 'PATH_LIST'))
+                            depress=(props.target_type == 'PATH_LIST'))
         path_btn.target_type = 'PATH_LIST'
         
         col.separator(factor=0.5)
@@ -121,9 +148,85 @@ class BONEMINMAX_PT_main_panel(bpy.types.Panel):
         elif props.target_type == 'SHAPEKEY_LIST':
             self.draw_shapekey_targets(col, props)
         elif props.target_type == 'PATH_LIST':
-            self.draw_path_targets(col, props)
+            self.draw_path_targets(col, props, context)
 
-    # ... rest of the methods remain the same ...
+    def draw_path_targets(self, layout, props, context):
+        """Draw custom path target controls."""
+        # Quick add section
+        add_box = layout.box()
+        add_box.label(text="Add Custom Path:", icon='PLUS')
+        
+        # Path input with eyedropper
+        path_row = add_box.row(align=True)
+        path_row.prop(props, "custom_path_input", text="Path")
+        
+        # Eyedropper button
+        eyedropper = path_row.operator("boneminmax.path_eyedropper", text="", icon='EYEDROPPER')
+        
+        # Show listening status and disable button when active
+        if props.path_eyedropper_active:
+            status_row = add_box.row()
+            status_row.alert = True
+            status_row.label(text="Listening for property changes... (ESC to cancel)", icon='REC')
+            
+            # Disable the eyedropper button when active
+            path_row.enabled = False
+        
+        if props.custom_path_input:
+            # Auto-detect and show the type
+            detected_type = auto_detect_path_type(props.custom_path_input)
+            
+            # Show detected type
+            type_row = add_box.row()
+            if detected_type == 'BOOLEAN':
+                type_row.label(text="Detected: Boolean Property", icon='CHECKBOX_HLT')
+            else:
+                type_row.label(text="Detected: Float Property", icon='DRIVER')
+            
+            # Validate button
+            add_box.operator("boneminmax.validate_path", text="Validate", icon='CHECKMARK')
+            
+            # Show appropriate value controls based on detected type
+            if detected_type == 'FLOAT':
+                row = add_box.row(align=True)
+                row.prop(props, "path_min_value", text="Min")
+                row.prop(props, "path_max_value", text="Max")
+            else:  # BOOLEAN
+                row = add_box.row(align=True)
+                row.prop(props, "path_false_value", text="False")
+                row.prop(props, "path_true_value", text="True")
+            
+            # Add button
+            add_box.operator("boneminmax.add_path_target", text="Add", icon='PLUS')
+        
+        # Target list
+        path_data = get_path_list_data(props)
+        if path_data:
+            layout.separator(factor=0.5)
+            
+            list_box = layout.box()
+            list_box.label(text="Custom Paths:", icon='SCRIPT')
+            
+            for path, path_info in path_data.items():
+                row = list_box.row()
+                
+                # Info
+                col = row.column()
+                # Shortened path
+                display_path = path if len(path) <= 30 else path[:27] + "..."
+                col.label(text=display_path)
+                
+                # Value info with type indicator
+                if path_info['type'] == 'FLOAT':
+                    col.label(text=f"Float: {path_info['min_value']:.2f} → {path_info['max_value']:.2f}", icon='DRIVER')
+                else:
+                    col.label(text=f"Bool: {path_info['false_value']:.2f} / {path_info['true_value']:.2f}", icon='CHECKBOX_HLT')
+                col.scale_y = 0.8
+                
+                # Remove button
+                op = row.operator("boneminmax.remove_path_target", text="", icon='X')
+                op.key_to_remove = path
+
     def draw_bone_source(self, layout, props, context):
         """Draw bone source controls."""
         # Record buttons
@@ -213,13 +316,21 @@ class BONEMINMAX_PT_main_panel(bpy.types.Panel):
             for bone_name, bone_data in to_data.items():
                 if bone_data.get('has_min') and bone_data.get('has_max'):
                     row = list_box.row()
-                    row.label(text=bone_name, icon='BONE_DATA')
+                    
+                    # Info column
+                    col = row.column()
+                    col.label(text=bone_name, icon='BONE_DATA')
                     
                     # Show changes
                     changes = bone_data.get('detected_changes', [])
                     if changes:
                         change_text = " & ".join([c['display'] for c in changes])
-                        row.label(text=change_text, icon='ORIENTATION_GIMBAL')
+                        col.label(text=change_text, icon='ORIENTATION_GIMBAL')
+                    col.scale_y = 0.8
+                    
+                    # Remove button
+                    op = row.operator("boneminmax.remove_pose_bone", text="", icon='X')
+                    op.bone_name = bone_name
 
     def draw_shapekey_targets(self, layout, props):
         """Draw shapekey target controls."""
@@ -227,8 +338,20 @@ class BONEMINMAX_PT_main_panel(bpy.types.Panel):
         add_box = layout.box()
         add_box.label(text="Add Shape Key:", icon='PLUS')
         
-        # Object selection
-        add_box.prop_search(props, "shapekey_target_object", bpy.data, "objects", text="Object")
+        # Object selection with eyedropper
+        obj_row = add_box.row(align=True)
+        obj_row.prop_search(props, "shapekey_target_object", bpy.data, "objects", text="Object")
+        
+        # Object eyedropper button
+        eyedropper = obj_row.operator("boneminmax.object_eyedropper", text="", icon='EYEDROPPER')
+        eyedropper.target_property = "shapekey_target_object"
+        
+        # Show active status and disable when active
+        if props.object_eyedropper_active:
+            status_row = add_box.row()
+            status_row.alert = True
+            status_row.label(text="Click on object in viewport... (ESC to cancel)", icon='CURSOR')
+            obj_row.enabled = False
         
         # Shape key selection
         if props.shapekey_target_object:
@@ -244,6 +367,8 @@ class BONEMINMAX_PT_main_panel(bpy.types.Panel):
                     
                     # Add button
                     add_box.operator("boneminmax.add_shapekey_target", text="Add", icon='PLUS')
+            else:
+                add_box.label(text="No shape keys found", icon='INFO')
         
         # Target list
         shapekey_data = get_shapekey_list_data(props)
@@ -265,62 +390,6 @@ class BONEMINMAX_PT_main_panel(bpy.types.Panel):
                 # Remove button
                 op = row.operator("boneminmax.remove_shapekey_target", text="", icon='X')
                 op.key_to_remove = key
-
-    def draw_path_targets(self, layout, props):
-        """Draw custom path target controls."""
-        # Quick add section
-        add_box = layout.box()
-        add_box.label(text="Add Custom Path:", icon='PLUS')
-        
-        # Path input
-        add_box.prop(props, "custom_path_input", text="Path")
-        
-        if props.custom_path_input:
-            # Validate button
-            add_box.operator("boneminmax.validate_path", text="Validate", icon='CHECKMARK')
-            
-            # Value type and range
-            add_box.prop(props, "path_value_type", text="Type")
-            
-            if props.path_value_type == 'FLOAT':
-                row = add_box.row(align=True)
-                row.prop(props, "path_min_value", text="Min")
-                row.prop(props, "path_max_value", text="Max")
-            else:
-                row = add_box.row(align=True)
-                row.prop(props, "path_false_value", text="False")
-                row.prop(props, "path_true_value", text="True")
-            
-            # Add button
-            add_box.operator("boneminmax.add_path_target", text="Add", icon='PLUS')
-        
-        # Target list
-        path_data = get_path_list_data(props)
-        if path_data:
-            layout.separator(factor=0.5)
-            
-            list_box = layout.box()
-            list_box.label(text="Custom Paths:", icon='SCRIPT')
-            
-            for path, path_info in path_data.items():
-                row = list_box.row()
-                
-                # Info
-                col = row.column()
-                # Shortened path
-                display_path = path if len(path) <= 30 else path[:27] + "..."
-                col.label(text=display_path)
-                
-                # Value info
-                if path_info['type'] == 'FLOAT':
-                    col.label(text=f"{path_info['min_value']:.2f} → {path_info['max_value']:.2f}")
-                else:
-                    col.label(text=f"{path_info['false_value']:.2f} / {path_info['true_value']:.2f}")
-                col.scale_y = 0.8
-                
-                # Remove button
-                op = row.operator("boneminmax.remove_path_target", text="", icon='X')
-                op.key_to_remove = path
 
     def draw_actions_panel(self, layout, props, context):
         """Draw action buttons."""
@@ -363,15 +432,15 @@ class BONEMINMAX_PT_main_panel(bpy.types.Panel):
         # Remove button
         col.operator("boneminmax.remove_drivers", text="Remove Drivers", icon='REMOVE')
 
-
-
-
     def get_source_status(self, props):
-        """Check if source is properly configured."""
-        if props.from_source_type == 'BONE':
+        """Check if source is properly configured (works for both bone and object)."""
+        # Check bone source
+        if props.from_bone:
             return bool(props.from_has_min and props.from_has_max and props.from_detected_axis)
-        else:
+        # Check object source
+        elif props.from_object:
             return bool(props.from_object_has_min and props.from_object_has_max and props.from_object_detected_axis)
+        return False
 
     def get_target_count(self, props):
         """Get number of configured targets."""
@@ -383,6 +452,7 @@ class BONEMINMAX_PT_main_panel(bpy.types.Panel):
         elif props.target_type == 'PATH_LIST':
             return len(get_path_list_data(props))
         return 0
+
 
 
 # List of UI classes for registration
@@ -399,4 +469,3 @@ def register():
 def unregister():
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)
-
