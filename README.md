@@ -3,8 +3,9 @@
 ![Blender](https://img.shields.io/badge/Blender-4.5%2B-orange.svg)
 ![License](https://img.shields.io/badge/license-MIT-yellow.svg)
 
-
-
+### Consider Supporting developement of future plugins! 
+https://embercat.gumroad.com/l/EasyDriver
+The Gumroad page includes tutorial files and always hosts the most up-to-date version.
 ![example](https://public-files.gumroad.com/ycus5s2abf4cuahkn7l097ylq4rf)
 
 
