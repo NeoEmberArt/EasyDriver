@@ -71,30 +71,74 @@ class BONEMINMAX_PT_main_panel(bpy.types.Panel):
             info = col.box()
             info.scale_y = 0.9
             
-            # Show bone or object name with appropriate icon
+            # Show bone or object name with appropriate icon and fine tune button
             row = info.row()
             if props.from_bone:
                 row.label(text=f"{props.from_armature}: {props.from_bone}", icon='BONE_DATA')
             elif props.from_object:
                 row.label(text=props.from_object, icon='OBJECT_DATA')
             
-            # Progress indicators
-            row = info.row(align=True)
+            # Fine tune button
+            row.operator("boneminmax.toggle_fine_tune", text="FINE TUNE", icon='PREFERENCES')
             
-            # Min/Max status (check appropriate properties)
-            min_col = row.column()
-            has_min = props.from_has_min if props.from_bone else props.from_object_has_min
-            min_col.label(text="Min", icon='KEYFRAME_HLT' if has_min else 'KEYFRAME')
+            # Check if fine tune mode is active
+            fine_tune_active = getattr(context.scene, "source_fine_tune_mode", False)
             
-            max_col = row.column()
-            has_max = props.from_has_max if props.from_bone else props.from_object_has_max
-            max_col.label(text="Max", icon='KEYFRAME_HLT' if has_max else 'KEYFRAME')
-            
-            # Detected axis
-            detected_axis = props.from_detected_axis if props.from_bone else props.from_object_detected_axis
-            if detected_axis:
-                axis_col = row.column()
-                axis_col.label(text=detected_axis, icon='ORIENTATION_GIMBAL')
+            if fine_tune_active:
+                # Fine tune inputs
+                col_tune = info.column()
+                col_tune.separator(factor=0.3)
+                
+                # Min/Max value inputs
+                row_inputs = col_tune.row(align=True)
+                
+                # Min input
+                min_col = row_inputs.column()
+                min_col.label(text="Min:")
+                if props.from_bone:
+                    min_col.prop(props, "fine_tune_min_value", text="")
+                else:
+                    min_col.prop(props, "fine_tune_object_min_value", text="")
+                
+                # Max input
+                max_col = row_inputs.column()
+                max_col.label(text="Max:")
+                if props.from_bone:
+                    max_col.prop(props, "fine_tune_max_value", text="")
+                else:
+                    max_col.prop(props, "fine_tune_object_max_value", text="")
+                
+                # Axis dropdown
+                axis_row = col_tune.row()
+                axis_row.label(text="Axis:")
+                if props.from_bone:
+                    axis_row.prop(props, "fine_tune_axis", text="")
+                else:
+                    axis_row.prop(props, "fine_tune_object_axis", text="")
+                
+                # Close button
+                close_row = col_tune.row()
+                close_row.operator("boneminmax.close_fine_tune", text="", icon='X')
+                
+            else:
+                # Normal status display
+                row = info.row(align=True)
+                
+                # Min/Max status (check appropriate properties)
+                min_col = row.column()
+                has_min = props.from_has_min if props.from_bone else props.from_object_has_min
+                min_col.label(text="Min", icon='KEYFRAME_HLT' if has_min else 'KEYFRAME')
+                
+                max_col = row.column()
+                has_max = props.from_has_max if props.from_bone else props.from_object_has_max
+                max_col.label(text="Max", icon='KEYFRAME_HLT' if has_max else 'KEYFRAME')
+                
+                # Detected axis
+                detected_axis = props.from_detected_axis if props.from_bone else props.from_object_detected_axis
+                if detected_axis:
+                    axis_col = row.column()
+                    axis_col.label(text=detected_axis, icon='ORIENTATION_GIMBAL')
+
 
     def draw_target_panel(self, layout, props, context):
         """Draw simplified target configuration."""
@@ -149,6 +193,7 @@ class BONEMINMAX_PT_main_panel(bpy.types.Panel):
             self.draw_shapekey_targets(col, props)
         elif props.target_type == 'PATH_LIST':
             self.draw_path_targets(col, props, context)
+
 
     def draw_path_targets(self, layout, props, context):
         """Draw custom path target controls."""
@@ -223,9 +268,18 @@ class BONEMINMAX_PT_main_panel(bpy.types.Panel):
                     col.label(text=f"Bool: {path_info['false_value']:.2f} / {path_info['true_value']:.2f}", icon='CHECKBOX_HLT')
                 col.scale_y = 0.8
                 
+                # Buttons column
+                btn_col = row.column(align=True)
+                
+                # Edit button
+                edit_op = btn_col.operator("boneminmax.edit_path_target", text="", icon='GREASEPENCIL')
+                edit_op.key_to_edit = path
+                
                 # Remove button
-                op = row.operator("boneminmax.remove_path_target", text="", icon='X')
-                op.key_to_remove = path
+                remove_op = btn_col.operator("boneminmax.remove_path_target", text="", icon='X')
+                remove_op.key_to_remove = path
+
+
 
     def draw_bone_source(self, layout, props, context):
         """Draw bone source controls."""
@@ -387,9 +441,17 @@ class BONEMINMAX_PT_main_panel(bpy.types.Panel):
                 col.label(text=f"{sk_data['min_value']:.2f} → {sk_data['max_value']:.2f}")
                 col.scale_y = 0.8
                 
+                # Buttons column
+                btn_col = row.column(align=True)
+                
+                # Edit button
+                edit_op = btn_col.operator("boneminmax.edit_shapekey_target", text="", icon='GREASEPENCIL')
+                edit_op.key_to_edit = key
+                
                 # Remove button
-                op = row.operator("boneminmax.remove_shapekey_target", text="", icon='X')
-                op.key_to_remove = key
+                remove_op = btn_col.operator("boneminmax.remove_shapekey_target", text="", icon='X')
+                remove_op.key_to_remove = key
+
 
     def draw_actions_panel(self, layout, props, context):
         """Draw action buttons."""
