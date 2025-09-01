@@ -6,12 +6,67 @@ from .core_functions import (
     get_selected_pose_bones, ensure_euler_rotation, ensure_object_euler_rotation,
     detect_significant_changes, get_to_bones_data, set_to_bones_data,
     get_shapekey_list_data, set_shapekey_list_data, get_path_list_data,
-    set_path_list_data, validate_custom_path, createDriver, update_shapekey_value, auto_detect_path_type
+    set_path_list_data, validate_custom_path, createDriver, update_shapekey_value, auto_detect_path_type,
+    update_fine_tune_min_value, update_fine_tune_max_value, update_fine_tune_axis, 
+    update_fine_tune_object_min_value, update_fine_tune_object_max_value, 
+    update_fine_tune_object_axis
 )
+
+
 
 
 # Update properties when creating new operators!
 class DriverRecorderProperties(bpy.types.PropertyGroup):
+    # Add this where you register other scene properties
+    bpy.types.Scene.source_fine_tune_mode = bpy.props.BoolProperty(
+        name="Source Fine Tune Mode",
+        default=False
+    )
+
+    # Bone fine tune properties
+    fine_tune_min_value: bpy.props.FloatProperty(
+        name="Min Value",
+        update=update_fine_tune_min_value
+    )
+    fine_tune_max_value: bpy.props.FloatProperty(
+        name="Max Value", 
+        update=update_fine_tune_max_value
+    )
+    fine_tune_axis: bpy.props.EnumProperty(
+        name="Axis",
+        items=[
+            ("LOC_X", "Loc X", "Location X"),
+            ("LOC_Y", "Loc Y", "Location Y"), 
+            ("LOC_Z", "Loc Z", "Location Z"),
+            ("ROT_X", "Rot X", "Rotation X"),
+            ("ROT_Y", "Rot Y", "Rotation Y"),
+            ("ROT_Z", "Rot Z", "Rotation Z"),
+        ],
+        update=update_fine_tune_axis
+    )
+
+    # Object fine tune properties
+    fine_tune_object_min_value: bpy.props.FloatProperty(
+        name="Min Value",
+        update=update_fine_tune_object_min_value
+    )
+    fine_tune_object_max_value: bpy.props.FloatProperty(
+        name="Max Value",
+        update=update_fine_tune_object_max_value
+    )
+    fine_tune_object_axis: bpy.props.EnumProperty(
+        name="Axis",
+        items=[
+            ("LOC_X", "Loc X", "Location X"),
+            ("LOC_Y", "Loc Y", "Location Y"),
+            ("LOC_Z", "Loc Z", "Location Z"), 
+            ("ROT_X", "Rot X", "Rotation X"),
+            ("ROT_Y", "Rot Y", "Rotation Y"),
+            ("ROT_Z", "Rot Z", "Rotation Z"),
+        ],
+        update=update_fine_tune_object_axis
+    )
+
     """Property group for driver recording."""
     object_eyedropper_active: bpy.props.BoolProperty(
         name="Object Eyedropper Active",
@@ -1376,6 +1431,79 @@ class BONEMINMAX_OT_one_axis_source_limit(bpy.types.Operator):
         return True
 
 
+class BONEMINMAX_OT_toggle_fine_tune(bpy.types.Operator):
+    bl_idname = "boneminmax.toggle_fine_tune"
+    bl_label = "Toggle Fine Tune"
+    bl_description = "Toggle fine tune mode for manual adjustment"
+
+    def execute(self, context):
+        props = context.scene.driver_recorder_props
+        
+        # Toggle fine tune mode
+        context.scene.source_fine_tune_mode = not context.scene.source_fine_tune_mode
+        
+        # If we're turning it on, initialize fine tune values based on recorded data
+        if context.scene.source_fine_tune_mode:
+            if props.from_bone:
+                self.init_bone_fine_tune(props)
+            elif props.from_object:
+                self.init_object_fine_tune(props)
+        
+        return {'FINISHED'}
+    
+    def init_bone_fine_tune(self, props):
+        """Initialize fine tune values for bone."""
+        # Get current axis and values
+        detected_axis = props.from_detected_axis
+        
+        # Set axis dropdown
+        axis_map = {
+            "LOC X": "LOC_X", "LOC Y": "LOC_Y", "LOC Z": "LOC_Z",
+            "ROT X": "ROT_X", "ROT Y": "ROT_Y", "ROT Z": "ROT_Z"
+        }
+        props.fine_tune_axis = axis_map.get(detected_axis, "LOC_X")
+        
+        # Get min/max values based on axis
+        if "LOC" in detected_axis:
+            axis_idx = ["X", "Y", "Z"].index(detected_axis.split()[-1])
+            props.fine_tune_min_value = props.from_min_location[axis_idx]
+            props.fine_tune_max_value = props.from_max_location[axis_idx]
+        elif "ROT" in detected_axis:
+            axis_idx = ["X", "Y", "Z"].index(detected_axis.split()[-1])
+            props.fine_tune_min_value = props.from_min_rotation[axis_idx]
+            props.fine_tune_max_value = props.from_max_rotation[axis_idx]
+    
+    def init_object_fine_tune(self, props):
+        """Initialize fine tune values for object."""
+        # Get current axis and values
+        detected_axis = props.from_object_detected_axis
+        
+        # Set axis dropdown
+        axis_map = {
+            "LOC X": "LOC_X", "LOC Y": "LOC_Y", "LOC Z": "LOC_Z",
+            "ROT X": "ROT_X", "ROT Y": "ROT_Y", "ROT Z": "ROT_Z"
+        }
+        props.fine_tune_object_axis = axis_map.get(detected_axis, "LOC_X")
+        
+        # Get min/max values based on axis
+        if "LOC" in detected_axis:
+            axis_idx = ["X", "Y", "Z"].index(detected_axis.split()[-1])
+            props.fine_tune_object_min_value = props.from_object_min_location[axis_idx]
+            props.fine_tune_object_max_value = props.from_object_max_location[axis_idx]
+        elif "ROT" in detected_axis:
+            axis_idx = ["X", "Y", "Z"].index(detected_axis.split()[-1])
+            props.fine_tune_object_min_value = props.from_object_min_rotation[axis_idx]
+            props.fine_tune_object_max_value = props.from_object_max_rotation[axis_idx]
+
+
+class BONEMINMAX_OT_close_fine_tune(bpy.types.Operator):
+    bl_idname = "boneminmax.close_fine_tune"
+    bl_label = "Close Fine Tune"
+    bl_description = "Close fine tune mode"
+
+    def execute(self, context):
+        context.scene.source_fine_tune_mode = False
+        return {'FINISHED'}
 
 
 class BONEMINMAX_OT_record_from_min(bpy.types.Operator):
@@ -1390,6 +1518,9 @@ class BONEMINMAX_OT_record_from_min(bpy.types.Operator):
         if not obj:
             self.report({'ERROR'}, "Please select an object")
             return {'CANCELLED'}
+        
+        # Close fine tune mode when recording new values
+        context.scene.source_fine_tune_mode = False
         
         # Auto-detect mode based on context
         if obj.type == 'ARMATURE' and obj.mode == 'POSE':
@@ -1469,6 +1600,9 @@ class BONEMINMAX_OT_record_from_max(bpy.types.Operator):
         if not obj:
             self.report({'ERROR'}, "Please select an object")
             return {'CANCELLED'}
+        
+        # Close fine tune mode when recording new values
+        context.scene.source_fine_tune_mode = False
         
         # Determine mode based on what was recorded for min
         if props.from_bone:
@@ -1791,6 +1925,7 @@ class BONEMINMAX_OT_record_to_max_pose(bpy.types.Operator):
         return {'FINISHED'}
 
 
+
 class BONEMINMAX_OT_add_shapekey_target(bpy.types.Operator):
     bl_idname = "boneminmax.add_shapekey_target"
     bl_label = "Add Shape Key"
@@ -1824,6 +1959,11 @@ class BONEMINMAX_OT_add_shapekey_target(bpy.types.Operator):
         # Create unique key for this shapekey
         key = f"{props.shapekey_target_object}:{props.shapekey_name}"
         
+        # Check if already exists
+        if key in shapekey_data:
+            self.report({'WARNING'}, f"Shape key {props.shapekey_name} from {props.shapekey_target_object} already exists")
+            return {'CANCELLED'}
+        
         shapekey_data[key] = {
             'object': props.shapekey_target_object,
             'shapekey': props.shapekey_name,
@@ -1833,7 +1973,45 @@ class BONEMINMAX_OT_add_shapekey_target(bpy.types.Operator):
         
         set_shapekey_list_data(props, shapekey_data)
         
+        # Clear inputs after adding
+        props.shapekey_target_object = ""
+        props.shapekey_name = ""
+        props.shapekey_min_value = 0.0
+        props.shapekey_max_value = 1.0
+        
         self.report({'INFO'}, f"Added {props.shapekey_name} from {props.shapekey_target_object}")
+        return {'FINISHED'}
+
+
+class BONEMINMAX_OT_edit_shapekey_target(bpy.types.Operator):
+    bl_idname = "boneminmax.edit_shapekey_target"
+    bl_label = "Edit Shape Key"
+    bl_description = "Edit this shape key (loads values into inputs and removes from list)"
+    
+    key_to_edit: bpy.props.StringProperty()
+
+    def execute(self, context):
+        props = context.scene.driver_recorder_props
+        shapekey_data = get_shapekey_list_data(props)
+        
+        if self.key_to_edit not in shapekey_data:
+            self.report({'ERROR'}, "Shape key not found in list")
+            return {'CANCELLED'}
+        
+        # Get the data
+        sk_data = shapekey_data[self.key_to_edit]
+        
+        # Load values into inputs
+        props.shapekey_target_object = sk_data['object']
+        props.shapekey_name = sk_data['shapekey']
+        props.shapekey_min_value = sk_data['min_value']
+        props.shapekey_max_value = sk_data['max_value']
+        
+        # Remove from list
+        del shapekey_data[self.key_to_edit]
+        set_shapekey_list_data(props, shapekey_data)
+        
+        self.report({'INFO'}, f"Loaded {sk_data['shapekey']} from {sk_data['object']} for editing")
         return {'FINISHED'}
 
 
@@ -1849,9 +2027,12 @@ class BONEMINMAX_OT_remove_shapekey_target(bpy.types.Operator):
         shapekey_data = get_shapekey_list_data(props)
         
         if self.key_to_remove in shapekey_data:
+            sk_data = shapekey_data[self.key_to_remove]
             del shapekey_data[self.key_to_remove]
             set_shapekey_list_data(props, shapekey_data)
-            self.report({'INFO'}, "Shape key removed")
+            self.report({'INFO'}, f"Removed {sk_data['shapekey']} from {sk_data['object']}")
+        else:
+            self.report({'ERROR'}, "Shape key not found in list")
         
         return {'FINISHED'}
 
@@ -1876,6 +2057,7 @@ class BONEMINMAX_OT_validate_path(bpy.types.Operator):
             self.report({'ERROR'}, f"Invalid path: {result}")
         
         return {'FINISHED'}
+
 
 
 class BONEMINMAX_OT_add_path_target(bpy.types.Operator):
@@ -1904,6 +2086,11 @@ class BONEMINMAX_OT_add_path_target(bpy.types.Operator):
         # Create unique key for this path
         key = props.custom_path_input
         
+        # Check if already exists
+        if key in path_data:
+            self.report({'WARNING'}, f"Path already exists in list")
+            return {'CANCELLED'}
+        
         # Use the detected type but manual values from UI
         if detected_type == 'FLOAT':
             path_data[key] = {
@@ -1922,13 +2109,60 @@ class BONEMINMAX_OT_add_path_target(bpy.types.Operator):
         
         set_path_list_data(props, path_data)
         
-        # Clear input after adding
+        # Clear inputs after adding
         props.custom_path_input = ""
+        props.path_min_value = 0.0
+        props.path_max_value = 1.0
+        props.path_false_value = 0.0
+        props.path_true_value = 1.0
         
         # Report what was detected and added
         type_text = "boolean" if detected_type == 'BOOLEAN' else "float"
         self.report({'INFO'}, f"Added {type_text} path")
         
+        return {'FINISHED'}
+
+
+class BONEMINMAX_OT_edit_path_target(bpy.types.Operator):
+    bl_idname = "boneminmax.edit_path_target"
+    bl_label = "Edit Path"
+    bl_description = "Edit this path (loads values into inputs and removes from list)"
+    
+    key_to_edit: bpy.props.StringProperty()
+
+    def execute(self, context):
+        props = context.scene.driver_recorder_props
+        path_data = get_path_list_data(props)
+        
+        if self.key_to_edit not in path_data:
+            self.report({'ERROR'}, "Path not found in list")
+            return {'CANCELLED'}
+        
+        # Get the data
+        path_info = path_data[self.key_to_edit]
+        
+        # Load values into inputs
+        props.custom_path_input = path_info['path']
+        
+        if path_info['type'] == 'FLOAT':
+            props.path_min_value = path_info['min_value']
+            props.path_max_value = path_info['max_value']
+            # Reset boolean values to defaults
+            props.path_false_value = 0.0
+            props.path_true_value = 1.0
+        else:  # BOOLEAN
+            props.path_false_value = path_info['false_value']
+            props.path_true_value = path_info['true_value']
+            # Reset float values to defaults
+            props.path_min_value = 0.0
+            props.path_max_value = 1.0
+        
+        # Remove from list
+        del path_data[self.key_to_edit]
+        set_path_list_data(props, path_data)
+        
+        type_text = "boolean" if path_info['type'] == 'BOOLEAN' else "float"
+        self.report({'INFO'}, f"Loaded {type_text} path for editing")
         return {'FINISHED'}
 
 
@@ -1944,11 +2178,18 @@ class BONEMINMAX_OT_remove_path_target(bpy.types.Operator):
         path_data = get_path_list_data(props)
         
         if self.key_to_remove in path_data:
+            path_info = path_data[self.key_to_remove]
             del path_data[self.key_to_remove]
             set_path_list_data(props, path_data)
-            self.report({'INFO'}, "Path removed")
+            
+            # Show shortened path in message
+            display_path = self.key_to_remove if len(self.key_to_remove) <= 40 else self.key_to_remove[:37] + "..."
+            self.report({'INFO'}, f"Removed path: {display_path}")
+        else:
+            self.report({'ERROR'}, "Path not found in list")
         
         return {'FINISHED'}
+
 
 class BONEMINMAX_OT_create_drivers(bpy.types.Operator):
     bl_idname = "boneminmax.create_drivers"
@@ -2414,7 +2655,10 @@ classes = (
     BONEMINMAX_OT_one_axis_source_limit,
     BONEMINMAX_OT_path_eyedropper,
     BONEMINMAX_OT_object_eyedropper,
-    BONEMINMAX_OT_remove_pose_bone
+    BONEMINMAX_OT_remove_pose_bone,
+    BONEMINMAX_OT_toggle_fine_tune,
+    BONEMINMAX_OT_edit_shapekey_target,
+    BONEMINMAX_OT_edit_path_target
 )
 
 
