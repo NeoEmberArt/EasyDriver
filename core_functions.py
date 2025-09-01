@@ -93,6 +93,119 @@ def createDriver(armature_name, from_path, fromMin, fromMax, to_path, toMin, toM
         traceback.print_exc()
         return False
 
+# Update functions for fine tune properties
+def update_fine_tune_min_value(self, context):
+    """Update bone min value when fine tune input changes."""
+    props = context.scene.driver_recorder_props
+    axis = props.fine_tune_axis
+    value = props.fine_tune_min_value
+    
+    if axis in ["LOC_X", "LOC_Y", "LOC_Z"]:
+        axis_idx = ["LOC_X", "LOC_Y", "LOC_Z"].index(axis)
+        loc = list(props.from_min_location)
+        loc[axis_idx] = value
+        props.from_min_location = loc
+    elif axis in ["ROT_X", "ROT_Y", "ROT_Z"]:
+        axis_idx = ["ROT_X", "ROT_Y", "ROT_Z"].index(axis)
+        rot = list(props.from_min_rotation)
+        rot[axis_idx] = value
+        props.from_min_rotation = rot
+
+def update_fine_tune_max_value(self, context):
+    """Update bone max value when fine tune input changes."""
+    props = context.scene.driver_recorder_props
+    axis = props.fine_tune_axis
+    value = props.fine_tune_max_value
+    
+    if axis in ["LOC_X", "LOC_Y", "LOC_Z"]:
+        axis_idx = ["LOC_X", "LOC_Y", "LOC_Z"].index(axis)
+        loc = list(props.from_max_location)
+        loc[axis_idx] = value
+        props.from_max_location = loc
+    elif axis in ["ROT_X", "ROT_Y", "ROT_Z"]:
+        axis_idx = ["ROT_X", "ROT_Y", "ROT_Z"].index(axis)
+        rot = list(props.from_max_rotation)
+        rot[axis_idx] = value
+        props.from_max_rotation = rot
+
+def update_fine_tune_axis(self, context):
+    """Update axis and sync values when axis changes."""
+    props = context.scene.driver_recorder_props
+    axis = props.fine_tune_axis
+    
+    # Update detected axis display
+    axis_display_map = {
+        "LOC_X": "LOC X", "LOC_Y": "LOC Y", "LOC_Z": "LOC Z",
+        "ROT_X": "ROT X", "ROT_Y": "ROT Y", "ROT_Z": "ROT Z"
+    }
+    props.from_detected_axis = axis_display_map.get(axis, "LOC X")
+    
+    # Update fine tune values to match new axis
+    if axis in ["LOC_X", "LOC_Y", "LOC_Z"]:
+        axis_idx = ["LOC_X", "LOC_Y", "LOC_Z"].index(axis)
+        props.fine_tune_min_value = props.from_min_location[axis_idx]
+        props.fine_tune_max_value = props.from_max_location[axis_idx]
+    elif axis in ["ROT_X", "ROT_Y", "ROT_Z"]:
+        axis_idx = ["ROT_X", "ROT_Y", "ROT_Z"].index(axis)
+        props.fine_tune_min_value = props.from_min_rotation[axis_idx]
+        props.fine_tune_max_value = props.from_max_rotation[axis_idx]
+
+# Object fine tune update functions
+def update_fine_tune_object_min_value(self, context):
+    """Update object min value when fine tune input changes."""
+    props = context.scene.driver_recorder_props
+    axis = props.fine_tune_object_axis
+    value = props.fine_tune_object_min_value
+    
+    if axis in ["LOC_X", "LOC_Y", "LOC_Z"]:
+        axis_idx = ["LOC_X", "LOC_Y", "LOC_Z"].index(axis)
+        loc = list(props.from_object_min_location)
+        loc[axis_idx] = value
+        props.from_object_min_location = loc
+    elif axis in ["ROT_X", "ROT_Y", "ROT_Z"]:
+        axis_idx = ["ROT_X", "ROT_Y", "ROT_Z"].index(axis)
+        rot = list(props.from_object_min_rotation)
+        rot[axis_idx] = value
+        props.from_object_min_rotation = rot
+
+def update_fine_tune_object_max_value(self, context):
+    """Update object max value when fine tune input changes."""
+    props = context.scene.driver_recorder_props
+    axis = props.fine_tune_object_axis
+    value = props.fine_tune_object_max_value
+    
+    if axis in ["LOC_X", "LOC_Y", "LOC_Z"]:
+        axis_idx = ["LOC_X", "LOC_Y", "LOC_Z"].index(axis)
+        loc = list(props.from_object_max_location)
+        loc[axis_idx] = value
+        props.from_object_max_location = loc
+    elif axis in ["ROT_X", "ROT_Y", "ROT_Z"]:
+        axis_idx = ["ROT_X", "ROT_Y", "ROT_Z"].index(axis)
+        rot = list(props.from_object_max_rotation)
+        rot[axis_idx] = value
+        props.from_object_max_rotation = rot
+
+def update_fine_tune_object_axis(self, context):
+    """Update object axis and sync values when axis changes."""
+    props = context.scene.driver_recorder_props
+    axis = props.fine_tune_object_axis
+    
+    # Update detected axis display
+    axis_display_map = {
+        "LOC_X": "LOC X", "LOC_Y": "LOC Y", "LOC_Z": "LOC Z",
+        "ROT_X": "ROT X", "ROT_Y": "ROT Y", "ROT_Z": "ROT Z"
+    }
+    props.from_object_detected_axis = axis_display_map.get(axis, "LOC X")
+    
+    # Update fine tune values to match new axis
+    if axis in ["LOC_X", "LOC_Y", "LOC_Z"]:
+        axis_idx = ["LOC_X", "LOC_Y", "LOC_Z"].index(axis)
+        props.fine_tune_object_min_value = props.from_object_min_location[axis_idx]
+        props.fine_tune_object_max_value = props.from_object_max_location[axis_idx]
+    elif axis in ["ROT_X", "ROT_Y", "ROT_Z"]:
+        axis_idx = ["ROT_X", "ROT_Y", "ROT_Z"].index(axis)
+        props.fine_tune_object_min_value = props.from_object_min_rotation[axis_idx]
+        props.fine_tune_object_max_value = props.from_object_max_rotation[axis_idx]
 
 
 def auto_detect_path_type(path):
