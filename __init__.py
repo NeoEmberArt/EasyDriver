@@ -1,12 +1,12 @@
 bl_info = {
     "name": "Easy Driver",
     "author": "NeoEmberArts",
-    "version": (1, 2, 0), #MAJOR.MINOR.PATCH
-    "blender": (4, 5, 0),
+    "version": (1, 3, 0), #MAJOR.MINOR.PATCH - 8/30/2025
+    "blender": (4, 2, 0),
     "location": "View3D > Sidebar > Rigging",
     "description": "Technical rigging made easier! Map transformations from a bone or obect to a custom pose/toggle/value/shapekey via automatically created drivers; Auto clamped and automatic mapping. Auto detects axis of change and the mimimum and maximum values.",
     "category": "Rigging",
-    "tags": ["Rigging", "Animation", "Drivers"],
+    "tags": ["Rigging", "Animation"],
 }
 
 import bpy
