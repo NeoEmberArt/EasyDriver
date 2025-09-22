@@ -9,20 +9,19 @@ from .core_functions import (
     set_path_list_data, validate_custom_path, createDriver, update_shapekey_value, auto_detect_path_type,
     update_fine_tune_min_value, update_fine_tune_max_value, update_fine_tune_axis, 
     update_fine_tune_object_min_value, update_fine_tune_object_max_value, 
-    update_fine_tune_object_axis
+    update_fine_tune_object_axis, parse_target_path, get_mirrored_name, mirror_source, mirror_pose_targets, mirror_shapekey_targets
 )
 
 
-
-
-# Update properties when creating new operators!
+#---------------------------------------
+# List Properties/Variables here
+#---------------------------------------
 class DriverRecorderProperties(bpy.types.PropertyGroup):
     # Add this where you register other scene properties
     bpy.types.Scene.source_fine_tune_mode = bpy.props.BoolProperty(
         name="Source Fine Tune Mode",
         default=False
     )
-
     # Bone fine tune properties
     fine_tune_min_value: bpy.props.FloatProperty(
         name="Min Value",
@@ -192,11 +191,12 @@ class DriverRecorderProperties(bpy.types.PropertyGroup):
     # Path list data (JSON string)
     path_list_data: bpy.props.StringProperty(default="{}")
 
-
-
-class BONEMINMAX_OT_object_eyedropper(bpy.types.Operator):
+#---------------------------------------
+# EyeDropper Functions
+#---------------------------------------
+class ANIM_OT_object_eyedropper(bpy.types.Operator):
     """Eyedropper tool to select objects by clicking in the viewport"""
-    bl_idname = "boneminmax.object_eyedropper"
+    bl_idname = "anim.object_eyedropper"
     bl_label = "Object Eyedropper"
     bl_description = "Click on an object in the viewport to select it"
     bl_options = {'REGISTER', 'UNDO'}
@@ -287,14 +287,13 @@ class BONEMINMAX_OT_object_eyedropper(bpy.types.Operator):
         
         return None
 
-
-class BONEMINMAX_OT_path_eyedropper(bpy.types.Operator):
+class ANIM_OT_path_eyedropper(bpy.types.Operator):
     """Eyedropper tool to capture property data paths by detecting changes"""
-    bl_idname = "boneminmax.path_eyedropper"
+    bl_idname = "anim.path_eyedropper"
     bl_label = "Path Eyedropper"
     bl_description = "Click and change any property to capture its data path"
     bl_options = {'REGISTER', 'UNDO'}
-    
+
     _timer = None
     _initial_state = {}
     
@@ -380,7 +379,7 @@ class BONEMINMAX_OT_path_eyedropper(bpy.types.Operator):
         self._initial_state.clear()
         
         # Monitor all objects
-        for obj in bpy.data.objects:
+        for obj in context.view_layer.objects:
             obj_data = {}
             
             # Basic object properties
@@ -563,7 +562,7 @@ class BONEMINMAX_OT_path_eyedropper(bpy.types.Operator):
         """Detect what property has changed and return its data path"""
         
         # Check objects
-        for obj in bpy.data.objects:
+        for obj in context.view_layer.objects:
             obj_key = f"objects.{obj.name}"
             if obj_key not in self._initial_state:
                 continue
@@ -755,11 +754,12 @@ class BONEMINMAX_OT_path_eyedropper(bpy.types.Operator):
         return None
 
 
-
-
-class BONEMINMAX_OT_limit_source_transforms(bpy.types.Operator):
+#---------------------------------------
+# Constraint Operators
+#---------------------------------------
+class OBJECT_OT_limit_source_transforms(bpy.types.Operator):
     """Add limit constraints to source bone/object based on recorded min/max values"""
-    bl_idname = "boneminmax.limit_source_transforms"
+    bl_idname = "object.limit_source_transforms"
     bl_label = "Limit Source Transforms"
     bl_description = "Add limit constraints to prevent source from going beyond recorded min/max values"
     bl_options = {'REGISTER', 'UNDO'}
@@ -938,8 +938,12 @@ class BONEMINMAX_OT_limit_source_transforms(bpy.types.Operator):
         if constraint_name in pose_bone.constraints:
             pose_bone.constraints.remove(pose_bone.constraints[constraint_name])
         
-        # Force bone to use Euler rotation mode
-        pose_bone.rotation_mode = 'XYZ'
+        # Use Euler angles for constraint computation only; avoid permanently changing mode
+        original_mode = pose_bone.rotation_mode
+        if original_mode == 'QUATERNION':
+            temp_euler = pose_bone.rotation_quaternion.to_euler('XYZ')
+            pose_bone.rotation_mode = 'XYZ'
+            pose_bone.rotation_euler = temp_euler
         
         # Add limit rotation constraint
         constraint = pose_bone.constraints.new('LIMIT_ROTATION')
@@ -1059,10 +1063,9 @@ class BONEMINMAX_OT_limit_source_transforms(bpy.types.Operator):
         print(f"Added rotation limit to {obj.name} {axis_info['axis']}: {actual_min_deg:.1f}° to {actual_max_deg:.1f}°")
         return True
 
-
-class BONEMINMAX_OT_one_axis_source_limit(bpy.types.Operator):
+class OBJECT_OT_one_axis_source_limit(bpy.types.Operator):
     """Lock source to move/rotate only on the detected axis, preventing movement on other axes"""
-    bl_idname = "boneminmax.one_axis_source_limit"
+    bl_idname = "object.one_axis_source_limit"
     bl_label = "Lock to One Axis Only"
     bl_description = "Lock source to only move/rotate on the detected axis, blocking all other axes"
     bl_options = {'REGISTER', 'UNDO'}
@@ -1430,9 +1433,11 @@ class BONEMINMAX_OT_one_axis_source_limit(bpy.types.Operator):
         print(f"Locked {obj.name} to {axis_info['axis']} rotation only (range: {actual_min_deg:.1f}° to {actual_max_deg:.1f}°)")
         return True
 
-
-class BONEMINMAX_OT_toggle_fine_tune(bpy.types.Operator):
-    bl_idname = "boneminmax.toggle_fine_tune"
+#---------------------------------------
+# Fine Tuning Operators
+#---------------------------------------
+class ANIM_OT_toggle_fine_tune(bpy.types.Operator):
+    bl_idname = "anim.toggle_fine_tune"
     bl_label = "Toggle Fine Tune"
     bl_description = "Toggle fine tune mode for manual adjustment"
 
@@ -1495,9 +1500,8 @@ class BONEMINMAX_OT_toggle_fine_tune(bpy.types.Operator):
             props.fine_tune_object_min_value = props.from_object_min_rotation[axis_idx]
             props.fine_tune_object_max_value = props.from_object_max_rotation[axis_idx]
 
-
-class BONEMINMAX_OT_close_fine_tune(bpy.types.Operator):
-    bl_idname = "boneminmax.close_fine_tune"
+class ANIM_OT_close_fine_tune(bpy.types.Operator):
+    bl_idname = "anim.close_fine_tune"
     bl_label = "Close Fine Tune"
     bl_description = "Close fine tune mode"
 
@@ -1505,9 +1509,11 @@ class BONEMINMAX_OT_close_fine_tune(bpy.types.Operator):
         context.scene.source_fine_tune_mode = False
         return {'FINISHED'}
 
-
-class BONEMINMAX_OT_record_from_min(bpy.types.Operator):
-    bl_idname = "boneminmax.record_from_min"
+#---------------------------------------
+# Source>Recording Operators
+#---------------------------------------
+class ANIM_OT_record_from_min(bpy.types.Operator):
+    bl_idname = "anim.record_from_min"
     bl_label = "Record Min Position"
     bl_description = "Record the current position/rotation as minimum (auto-detects bone/object mode)"
 
@@ -1587,9 +1593,8 @@ class BONEMINMAX_OT_record_from_min(bpy.types.Operator):
         props.from_object_has_max = False
         props.from_object_detected_axis = ""
 
-
-class BONEMINMAX_OT_record_from_max(bpy.types.Operator):
-    bl_idname = "boneminmax.record_from_max"
+class ANIM_OT_record_from_max(bpy.types.Operator):
+    bl_idname = "anim.record_from_max"
     bl_label = "Record Max Position"
     bl_description = "Record the current position/rotation as maximum and detect primary axis"
 
@@ -1714,95 +1719,14 @@ class BONEMINMAX_OT_record_from_max(bpy.types.Operator):
         else:
             props.from_object_detected_axis = "No significant change detected"
 
-
-
-# OBJECT OPERATORS
-class BONEMINMAX_OT_record_object_min(bpy.types.Operator):
-    bl_idname = "boneminmax.record_object_min"
-    bl_label = "Record Min Position"
-    bl_description = "Record the current position/rotation of the active object as minimum"
-
-    def execute(self, context):
-        props = context.scene.driver_recorder_props
-        obj = context.object
-        
-        if not obj:
-            self.report({'ERROR'}, "Please select an object")
-            return {'CANCELLED'}
-        
-        # Set as FROM object and record min
-        props.from_object = obj.name
-        props.from_object_min_location = obj.location[:]
-        euler = ensure_object_euler_rotation(obj)
-        props.from_object_min_rotation = (euler.x, euler.y, euler.z)
-        props.from_object_has_min = True
-        
-        # Clear max and detected axis since we have a new object
-        props.from_object_has_max = False
-        props.from_object_detected_axis = ""
-        
-        self.report({'INFO'}, f"Recorded MIN for object {obj.name}")
-        return {'FINISHED'}
-
-
-class BONEMINMAX_OT_record_object_max(bpy.types.Operator):
-    bl_idname = "boneminmax.record_object_max"
-    bl_label = "Record Max Position"
-    bl_description = "Record the current position/rotation as maximum and detect primary axis"
-
-    def execute(self, context):
-        props = context.scene.driver_recorder_props
-        
-        if not props.from_object_has_min or not props.from_object:
-            self.report({'ERROR'}, "Please record MIN position first")
-            return {'CANCELLED'}
-        
-        obj = context.object
-        if not obj or obj.name != props.from_object:
-            self.report({'ERROR'}, "Please select the same object")
-            return {'CANCELLED'}
-        
-        # Record max values
-        props.from_object_max_location = obj.location[:]
-        euler = ensure_object_euler_rotation(obj)
-        props.from_object_max_rotation = (euler.x, euler.y, euler.z)
-        props.from_object_has_max = True
-        
-        # Detect primary axis
-        min_vals = {
-            'location': props.from_object_min_location,
-            'rotation': props.from_object_min_rotation
-        }
-        max_vals = {
-            'location': props.from_object_max_location,
-            'rotation': props.from_object_max_rotation
-        }
-        
-        changes = detect_significant_changes(min_vals, max_vals)
-        
-        if changes:
-            # Find the change with the largest difference
-            largest_change = max(changes, key=lambda x: abs(x[3] - x[2]))
-            transform_type, axis, _, _ = largest_change
-            
-            axis_names = ['X', 'Y', 'Z']
-            if transform_type == 'location':
-                props.from_object_detected_axis = f"LOC {axis_names[axis]}"
-            else:
-                props.from_object_detected_axis = f"ROT {axis_names[axis]}"
-        else:
-            props.from_object_detected_axis = "No significant change detected"
-        
-        self.report({'INFO'}, f"Detected: {props.from_object_detected_axis}")
-        return {'FINISHED'}
-
-
-# TARGET OPERATORS
-class BONEMINMAX_OT_remove_pose_bone(bpy.types.Operator):
-    bl_idname = "boneminmax.remove_pose_bone"
+#---------------------------------------
+# Target>Pose Operators
+#---------------------------------------
+class POSE_OT_remove_pose_bone(bpy.types.Operator):
+    bl_idname = "pose.remove_pose_bone"
     bl_label = "Remove Pose Bone"
     bl_description = "Remove this bone from the target list"
-    
+   
     bone_name: bpy.props.StringProperty()
     
     def execute(self, context):
@@ -1818,10 +1742,8 @@ class BONEMINMAX_OT_remove_pose_bone(bpy.types.Operator):
         
         return {'FINISHED'}
 
-
-# TARGET OPERATORS (updated to work with individual removal)
-class BONEMINMAX_OT_record_to_min_pose(bpy.types.Operator):
-    bl_idname = "boneminmax.record_to_min_pose"
+class POSE_OT_record_to_min_pose(bpy.types.Operator):
+    bl_idname = "pose.record_to_min_pose"
     bl_label = "Record MIN Pose"
     bl_description = "Record current pose as minimum for all selected bones"
 
@@ -1836,7 +1758,7 @@ class BONEMINMAX_OT_record_to_min_pose(bpy.types.Operator):
         to_data = get_to_bones_data(props)
         
         for bone in selected_bones:
-            ensure_euler_rotation(bone)
+            ensure_euler_rotation(bone, True)
             
             bone_data = to_data.get(bone.name, {
                 'armature': obj.name,
@@ -1850,7 +1772,7 @@ class BONEMINMAX_OT_record_to_min_pose(bpy.types.Operator):
             })
             
             bone_data['min_location'] = list(bone.location)
-            bone_data['min_rotation'] = list(ensure_euler_rotation(bone))
+            bone_data['min_rotation'] = list(ensure_euler_rotation(bone, True))
             bone_data['has_min'] = True
             bone_data['has_max'] = False  # Reset max when recording new min
             bone_data['detected_changes'] = []  # Reset changes
@@ -1862,9 +1784,8 @@ class BONEMINMAX_OT_record_to_min_pose(bpy.types.Operator):
         self.report({'INFO'}, f"Recorded MIN pose for {len(selected_bones)} bones")
         return {'FINISHED'}
 
-
-class BONEMINMAX_OT_record_to_max_pose(bpy.types.Operator):
-    bl_idname = "boneminmax.record_to_max_pose"
+class POSE_OT_record_to_max_pose(bpy.types.Operator):
+    bl_idname = "pose.record_to_max_pose"
     bl_label = "Record MAX Pose"
     bl_description = "Record current pose as maximum and detect changes for all target bones"
 
@@ -1881,12 +1802,12 @@ class BONEMINMAX_OT_record_to_max_pose(bpy.types.Operator):
         
         for bone in selected_bones:
             if bone.name in to_data and to_data[bone.name]['has_min']:
-                ensure_euler_rotation(bone)
+                ensure_euler_rotation(bone, True)
                 bone_data = to_data[bone.name]
                 
                 # Record max values
                 bone_data['max_location'] = list(bone.location)
-                bone_data['max_rotation'] = list(ensure_euler_rotation(bone))
+                bone_data['max_rotation'] = list(ensure_euler_rotation(bone, True))
                 bone_data['has_max'] = True
                 
                 # Detect changes
@@ -1924,10 +1845,11 @@ class BONEMINMAX_OT_record_to_max_pose(bpy.types.Operator):
         self.report({'INFO'}, f"Recorded MAX pose for {bones_processed} bones")
         return {'FINISHED'}
 
-
-
-class BONEMINMAX_OT_add_shapekey_target(bpy.types.Operator):
-    bl_idname = "boneminmax.add_shapekey_target"
+#---------------------------------------
+# Target>Shapekey Operators
+#---------------------------------------
+class MESH_OT_add_shapekey_target(bpy.types.Operator):
+    bl_idname = "mesh.add_shapekey_target"
     bl_label = "Add Shape Key"
     bl_description = "Add the selected shape key to the target list"
 
@@ -1973,21 +1895,24 @@ class BONEMINMAX_OT_add_shapekey_target(bpy.types.Operator):
         
         set_shapekey_list_data(props, shapekey_data)
         
+        # Reset the shape key value to zero
+        key_block.value = 0.0
+        
         # Clear inputs after adding
         props.shapekey_target_object = ""
         props.shapekey_name = ""
         props.shapekey_min_value = 0.0
         props.shapekey_max_value = 1.0
         
-        self.report({'INFO'}, f"Added {props.shapekey_name} from {props.shapekey_target_object}")
+        self.report({'INFO'}, f"Added {props.shapekey_name} from {props.shapekey_target_object} (reset to 0.0)")
         return {'FINISHED'}
 
 
-class BONEMINMAX_OT_edit_shapekey_target(bpy.types.Operator):
-    bl_idname = "boneminmax.edit_shapekey_target"
+class MESH_OT_edit_shapekey_target(bpy.types.Operator):
+    bl_idname = "mesh.edit_shapekey_target"
     bl_label = "Edit Shape Key"
     bl_description = "Edit this shape key (loads values into inputs and removes from list)"
-    
+
     key_to_edit: bpy.props.StringProperty()
 
     def execute(self, context):
@@ -2014,12 +1939,11 @@ class BONEMINMAX_OT_edit_shapekey_target(bpy.types.Operator):
         self.report({'INFO'}, f"Loaded {sk_data['shapekey']} from {sk_data['object']} for editing")
         return {'FINISHED'}
 
-
-class BONEMINMAX_OT_remove_shapekey_target(bpy.types.Operator):
-    bl_idname = "boneminmax.remove_shapekey_target"
+class MESH_OT_remove_shapekey_target(bpy.types.Operator):
+    bl_idname = "mesh.remove_shapekey_target"
     bl_label = "Remove"
     bl_description = "Remove this shape key from the list"
-    
+
     key_to_remove: bpy.props.StringProperty()
 
     def execute(self, context):
@@ -2036,9 +1960,11 @@ class BONEMINMAX_OT_remove_shapekey_target(bpy.types.Operator):
         
         return {'FINISHED'}
 
-
-class BONEMINMAX_OT_validate_path(bpy.types.Operator):
-    bl_idname = "boneminmax.validate_path"
+#---------------------------------------
+# Target>Path Operators
+#---------------------------------------
+class SCENE_OT_validate_path(bpy.types.Operator):
+    bl_idname = "scene.validate_path"
     bl_label = "Validate Path"
     bl_description = "Test if the custom path is valid and accessible"
 
@@ -2058,10 +1984,8 @@ class BONEMINMAX_OT_validate_path(bpy.types.Operator):
         
         return {'FINISHED'}
 
-
-
-class BONEMINMAX_OT_add_path_target(bpy.types.Operator):
-    bl_idname = "boneminmax.add_path_target"
+class SCENE_OT_add_path_target(bpy.types.Operator):
+    bl_idname = "scene.add_path_target"
     bl_label = "Add Path"
     bl_description = "Add the custom path to the target list"
 
@@ -2072,14 +1996,15 @@ class BONEMINMAX_OT_add_path_target(bpy.types.Operator):
             self.report({'ERROR'}, "Please enter a custom path")
             return {'CANCELLED'}
         
-        # Validate path
-        is_valid, result = validate_custom_path(props.custom_path_input)
-        if not is_valid:
-            self.report({'ERROR'}, f"Invalid path: {result}")
+        # Parse the path to get data block, data path, and index
+        data_block, data_path, index = parse_target_path(props.custom_path_input)
+        
+        if data_block is None or data_path is None:
+            self.report({'ERROR'}, "Invalid or unsupported path format")
             return {'CANCELLED'}
         
-        # Auto-detect the property type (but use manual values)
-        detected_type = auto_detect_path_type(props.custom_path_input)
+        # Auto-detect the property type using the parsed components
+        detected_type = auto_detect_path_type(data_block, data_path, index)
         
         path_data = get_path_list_data(props)
         
@@ -2122,9 +2047,8 @@ class BONEMINMAX_OT_add_path_target(bpy.types.Operator):
         
         return {'FINISHED'}
 
-
-class BONEMINMAX_OT_edit_path_target(bpy.types.Operator):
-    bl_idname = "boneminmax.edit_path_target"
+class SCENE_OT_edit_path_target(bpy.types.Operator):
+    bl_idname = "scene.edit_path_target"
     bl_label = "Edit Path"
     bl_description = "Edit this path (loads values into inputs and removes from list)"
     
@@ -2165,12 +2089,11 @@ class BONEMINMAX_OT_edit_path_target(bpy.types.Operator):
         self.report({'INFO'}, f"Loaded {type_text} path for editing")
         return {'FINISHED'}
 
-
-class BONEMINMAX_OT_remove_path_target(bpy.types.Operator):
-    bl_idname = "boneminmax.remove_path_target"
+class SCENE_OT_remove_path_target(bpy.types.Operator):
+    bl_idname = "scene.remove_path_target"
     bl_label = "Remove"
     bl_description = "Remove this path from the list"
-    
+   
     key_to_remove: bpy.props.StringProperty()
 
     def execute(self, context):
@@ -2190,9 +2113,11 @@ class BONEMINMAX_OT_remove_path_target(bpy.types.Operator):
         
         return {'FINISHED'}
 
-
-class BONEMINMAX_OT_create_drivers(bpy.types.Operator):
-    bl_idname = "boneminmax.create_drivers"
+#---------------------------------------
+# Actions>Driver&Expression Operators
+#---------------------------------------
+class ANIM_OT_create_drivers(bpy.types.Operator):
+    bl_idname = "anim.create_drivers"
     bl_label = "Create Drivers"
     bl_description = "Create drivers from FROM source to all targets"
 
@@ -2385,9 +2310,8 @@ class BONEMINMAX_OT_create_drivers(bpy.types.Operator):
         self.report({'INFO'}, f"Created {drivers_created} drivers")
         return {'FINISHED'}
 
-
-class BONEMINMAX_OT_remove_drivers(bpy.types.Operator):
-    bl_idname = "boneminmax.remove_drivers"
+class ANIM_OT_remove_drivers(bpy.types.Operator):
+    bl_idname = "anim.remove_drivers"
     bl_label = "Remove Drivers"
     bl_description = "Remove all drivers from targets and selected objects"
 
@@ -2518,8 +2442,69 @@ class BONEMINMAX_OT_remove_drivers(bpy.types.Operator):
         return {'FINISHED'}
 
 
-class BONEMINMAX_OT_clear_all(bpy.types.Operator):
-    bl_idname = "boneminmax.clear_all"
+# Add these operator classes to operators.py
+
+class ANIM_OT_mirror_source(bpy.types.Operator):
+    """Mirror source bone/object to opposite side"""
+    bl_idname = "anim.mirror_source"
+    bl_label = "Mirror Source"
+    bl_description = "Mirror source to opposite side (keeps recorded min/max values)"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        props = context.scene.driver_recorder_props
+        
+        try:
+            success, message = mirror_source(props)
+            
+            if success:
+                self.report({'INFO'}, message)
+            else:
+                self.report({'WARNING'}, message)
+                
+        except Exception as e:
+            self.report({'ERROR'}, f"Mirror failed: {str(e)}")
+            return {'CANCELLED'}
+        
+        return {'FINISHED'}
+
+class ANIM_OT_mirror_targets(bpy.types.Operator):
+    """Mirror target configuration to opposite side"""
+    bl_idname = "anim.mirror_targets"
+    bl_label = "Mirror Targets"
+    bl_description = "Mirror all targets to opposite side"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        props = context.scene.driver_recorder_props
+        
+        try:
+            if props.target_type == 'CUSTOM_POSE':
+                success, message = mirror_pose_targets(props)
+            elif props.target_type == 'SHAPEKEY_LIST':
+                success, message = mirror_shapekey_targets(props)
+            elif props.target_type == 'PATH_LIST':
+                self.report({'INFO'}, "Mirror not supported for custom paths")
+                return {'FINISHED'}
+            else:
+                self.report({'ERROR'}, "Unknown target type")
+                return {'CANCELLED'}
+            
+            if success:
+                self.report({'INFO'}, message)
+            else:
+                self.report({'WARNING'}, message)
+                
+        except Exception as e:
+            self.report({'ERROR'}, f"Mirror failed: {str(e)}")
+            return {'CANCELLED'}
+        
+        return {'FINISHED'}
+
+
+
+class SCENE_OT_clear_all(bpy.types.Operator):
+    bl_idname = "scene.clear_all"
     bl_label = "Clear All"
     bl_description = "Clear all recorded data"
 
@@ -2550,12 +2535,11 @@ class BONEMINMAX_OT_clear_all(bpy.types.Operator):
         self.report({'INFO'}, "All data cleared")
         return {'FINISHED'}
 
-
-class BONEMINMAX_OT_set_target_type(bpy.types.Operator):
-    bl_idname = "boneminmax.set_target_type"
+class SCENE_OT_set_target_type(bpy.types.Operator):
+    bl_idname = "scene.set_target_type"
     bl_label = "Set Target Type"
     bl_description = "Set the target type"
-    
+  
     target_type: bpy.props.StringProperty()
 
     def execute(self, context):
@@ -2563,12 +2547,12 @@ class BONEMINMAX_OT_set_target_type(bpy.types.Operator):
         props.target_type = self.target_type
         return {'FINISHED'}
 
-class BONEMINMAX_OT_clear_source(bpy.types.Operator):
+class SCENE_OT_clear_source(bpy.types.Operator):
     """Clear all source configuration"""
-    bl_idname = "boneminmax.clear_source"
+    bl_idname = "scene.clear_source"
     bl_label = "Clear Source"
     bl_options = {'REGISTER', 'UNDO'}
-    
+  
     def execute(self, context):
         props = context.scene.driver_recorder_props
         
@@ -2599,13 +2583,12 @@ class BONEMINMAX_OT_clear_source(bpy.types.Operator):
         self.report({'INFO'}, "Source configuration cleared")
         return {'FINISHED'}
 
-
-class BONEMINMAX_OT_clear_targets(bpy.types.Operator):
+class SCENE_OT_clear_targets(bpy.types.Operator):
     """Clear all target configuration"""
-    bl_idname = "boneminmax.clear_targets"
+    bl_idname = "scene.clear_targets"
     bl_label = "Clear Targets"
     bl_options = {'REGISTER', 'UNDO'}
-    
+  
     def execute(self, context):
         props = context.scene.driver_recorder_props
         
@@ -2630,42 +2613,43 @@ class BONEMINMAX_OT_clear_targets(bpy.types.Operator):
         self.report({'INFO'}, "Target configuration cleared")
         return {'FINISHED'}
 
-
-# List of all classes for registration
+#---------------------------------------
+# Registration - Dont forget to update!
+#---------------------------------------
+ 
 classes = (
     DriverRecorderProperties,
-    BONEMINMAX_OT_record_from_min,
-    BONEMINMAX_OT_record_from_max,
-    BONEMINMAX_OT_record_object_min,
-    BONEMINMAX_OT_record_object_max,
-    BONEMINMAX_OT_record_to_min_pose,
-    BONEMINMAX_OT_record_to_max_pose,
-    BONEMINMAX_OT_add_shapekey_target,
-    BONEMINMAX_OT_remove_shapekey_target,
-    BONEMINMAX_OT_validate_path,
-    BONEMINMAX_OT_add_path_target,
-    BONEMINMAX_OT_remove_path_target,
-    BONEMINMAX_OT_create_drivers,
-    BONEMINMAX_OT_remove_drivers,
-    BONEMINMAX_OT_clear_all,
-    BONEMINMAX_OT_set_target_type,
-    BONEMINMAX_OT_clear_targets,
-    BONEMINMAX_OT_clear_source,
-    BONEMINMAX_OT_limit_source_transforms,
-    BONEMINMAX_OT_one_axis_source_limit,
-    BONEMINMAX_OT_path_eyedropper,
-    BONEMINMAX_OT_object_eyedropper,
-    BONEMINMAX_OT_remove_pose_bone,
-    BONEMINMAX_OT_toggle_fine_tune,
-    BONEMINMAX_OT_edit_shapekey_target,
-    BONEMINMAX_OT_edit_path_target
+    ANIM_OT_record_from_min,
+    ANIM_OT_record_from_max,
+    POSE_OT_record_to_min_pose,
+    POSE_OT_record_to_max_pose,
+    MESH_OT_add_shapekey_target,
+    MESH_OT_remove_shapekey_target,
+    SCENE_OT_validate_path,
+    SCENE_OT_add_path_target,
+    SCENE_OT_remove_path_target,
+    ANIM_OT_create_drivers,
+    ANIM_OT_remove_drivers,
+    SCENE_OT_clear_all,
+    SCENE_OT_set_target_type,
+    SCENE_OT_clear_targets,
+    SCENE_OT_clear_source,
+    OBJECT_OT_limit_source_transforms,
+    OBJECT_OT_one_axis_source_limit,
+    ANIM_OT_path_eyedropper,
+    ANIM_OT_object_eyedropper,
+    POSE_OT_remove_pose_bone,
+    ANIM_OT_toggle_fine_tune,
+    MESH_OT_edit_shapekey_target,
+    SCENE_OT_edit_path_target,
+    ANIM_OT_mirror_source,
+    ANIM_OT_mirror_targets,
 )
 
 
 def register():
     for cls in classes:
         bpy.utils.register_class(cls)
-
 
 def unregister():
     for cls in reversed(classes):

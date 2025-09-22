@@ -3,6 +3,9 @@ from .core_functions import (
     get_to_bones_data, get_shapekey_list_data, get_path_list_data, auto_detect_path_type
 )
 
+#---------------------------------------
+# UI
+#---------------------------------------
 class BONEMINMAX_PT_main_panel(bpy.types.Panel):
     bl_label = "Easy Driver"
     bl_idname = "BONEMINMAX_PT_main_panel"
@@ -10,6 +13,9 @@ class BONEMINMAX_PT_main_panel(bpy.types.Panel):
     bl_region_type = 'UI'
     bl_category = "Rigging"
 
+    #---------------------------------------
+    # Draw UI
+    #---------------------------------------
     def draw(self, context):
         layout = self.layout
         props = context.scene.driver_recorder_props
@@ -17,7 +23,7 @@ class BONEMINMAX_PT_main_panel(bpy.types.Panel):
         # Header with clear button
         header = layout.row()
         header.label(text="Driver Creator", icon='DRIVER')
-        header.operator("boneminmax.clear_all", text="", icon='TRASH')
+        header.operator("scene.clear_all", text="", icon='TRASH')
         
         layout.separator()
 
@@ -29,6 +35,11 @@ class BONEMINMAX_PT_main_panel(bpy.types.Panel):
         
         # ACTIONS PANEL
         self.draw_actions_panel(layout, props, context)
+
+    #---------------------------------------
+    # Pannels
+    #---------------------------------------
+    # Replace the draw_source_panel and draw_target_panel methods in ui.py
 
     def draw_source_panel(self, layout, props, context):
         """Draw simplified source configuration with automatic mode detection."""
@@ -48,8 +59,12 @@ class BONEMINMAX_PT_main_panel(bpy.types.Panel):
         if is_ready:
             header.label(text="", icon='CHECKMARK')
         
+        # Mirror button - only show if source is configured
+        if props.from_bone or props.from_object:
+            header.operator("anim.mirror_source", text="", icon='MOD_MIRROR')
+        
         # Clear source button
-        header.operator("boneminmax.clear_source", text="", icon='TRASH')
+        header.operator("scene.clear_source", text="", icon='TRASH')
         
         if not getattr(context.scene, "show_source", True):
             return
@@ -61,8 +76,8 @@ class BONEMINMAX_PT_main_panel(bpy.types.Panel):
         row = col.row(align=True)
         row.scale_y = 1.2
         
-        row.operator("boneminmax.record_from_min", text="Record Min")
-        row.operator("boneminmax.record_from_max", text="Record Max")
+        row.operator("anim.record_from_min", text="Record Min")
+        row.operator("anim.record_from_max", text="Record Max")
         
         col.separator(factor=0.5)
         
@@ -79,7 +94,7 @@ class BONEMINMAX_PT_main_panel(bpy.types.Panel):
                 row.label(text=props.from_object, icon='OBJECT_DATA')
             
             # Fine tune button
-            row.operator("boneminmax.toggle_fine_tune", text="FINE TUNE", icon='PREFERENCES')
+            row.operator("anim.toggle_fine_tune", text="FINE TUNE", icon='PREFERENCES')
             
             # Check if fine tune mode is active
             fine_tune_active = getattr(context.scene, "source_fine_tune_mode", False)
@@ -118,7 +133,7 @@ class BONEMINMAX_PT_main_panel(bpy.types.Panel):
                 
                 # Close button
                 close_row = col_tune.row()
-                close_row.operator("boneminmax.close_fine_tune", text="", icon='X')
+                close_row.operator("anim.close_fine_tune", text="", icon='X')
                 
             else:
                 # Normal status display
@@ -139,7 +154,6 @@ class BONEMINMAX_PT_main_panel(bpy.types.Panel):
                     axis_col = row.column()
                     axis_col.label(text=detected_axis, icon='ORIENTATION_GIMBAL')
 
-
     def draw_target_panel(self, layout, props, context):
         """Draw simplified target configuration."""
         # Collapsible target section
@@ -157,8 +171,12 @@ class BONEMINMAX_PT_main_panel(bpy.types.Panel):
         if target_count > 0:
             header.label(text=f"({target_count})")
         
+        # Mirror button - only show for pose and shapekey targets, and only if targets exist
+        if target_count > 0 and props.target_type in ['CUSTOM_POSE', 'SHAPEKEY_LIST']:
+            header.operator("anim.mirror_targets", text="", icon='MOD_MIRROR')
+        
         # Clear targets button
-        header.operator("boneminmax.clear_targets", text="", icon='TRASH')
+        header.operator("scene.clear_targets", text="", icon='TRASH')
         
         if not getattr(context.scene, "show_targets", True):
             return
@@ -170,17 +188,17 @@ class BONEMINMAX_PT_main_panel(bpy.types.Panel):
         row = col.row(align=True)
         
         # Custom Pose button
-        pose_btn = row.operator("boneminmax.set_target_type", text="Pose", 
+        pose_btn = row.operator("scene.set_target_type", text="Pose", 
                             depress=(props.target_type == 'CUSTOM_POSE'))
         pose_btn.target_type = 'CUSTOM_POSE'
         
         # Shapekey List button
-        shape_btn = row.operator("boneminmax.set_target_type", text="ShapeKeys",
+        shape_btn = row.operator("scene.set_target_type", text="ShapeKeys",
                                 depress=(props.target_type == 'SHAPEKEY_LIST'))
         shape_btn.target_type = 'SHAPEKEY_LIST'
         
         # Path List button
-        path_btn = row.operator("boneminmax.set_target_type", text="Custom Paths",
+        path_btn = row.operator("scene.set_target_type", text="Custom Paths",
                             depress=(props.target_type == 'PATH_LIST'))
         path_btn.target_type = 'PATH_LIST'
         
@@ -195,6 +213,52 @@ class BONEMINMAX_PT_main_panel(bpy.types.Panel):
             self.draw_path_targets(col, props, context)
 
 
+
+
+    def draw_actions_panel(self, layout, props, context):
+        """Draw action buttons."""
+        box = layout.box()
+        
+        # Status check
+        source_ready = self.get_source_status(props)
+        target_count = self.get_target_count(props)
+        can_create = source_ready and target_count > 0
+        
+        # Status message
+        if can_create:
+            box.label(text="Ready to create drivers", icon='CHECKMARK')
+        else:
+            box.label(text="Set up source and targets", icon='INFO')
+        
+        # Action buttons
+        col = box.column(align=True)
+        col.scale_y = 1.3
+        
+        # Create button
+        create_row = col.row()
+        create_row.enabled = bool(can_create)
+        create_row.operator("anim.create_drivers", text="Create Drivers", icon='PLUS')
+        
+        # Constraint buttons section - side by side
+        col.separator(factor=0.5)
+        constraint_row = col.row(align=True)
+        constraint_row.scale_y = 1.0
+        constraint_row.enabled = bool(source_ready)
+        
+        # Lock to One Axis button
+        constraint_row.operator("object.one_axis_source_limit", text="Lock to one axis", icon='LOCKED')
+        
+        # Limit All Transforms button  
+        constraint_row.operator("object.limit_source_transforms", text="Lock Recorded", icon='CONSTRAINT')
+        
+        col.separator(factor=0.5)
+        
+        # Remove button
+        col.operator("anim.remove_drivers", text="Remove Drivers", icon='REMOVE')
+
+    #---------------------------------------
+    # UI elements
+    #---------------------------------------
     def draw_path_targets(self, layout, props, context):
         """Draw custom path target controls."""
         # Quick add section
@@ -206,7 +270,7 @@ class BONEMINMAX_PT_main_panel(bpy.types.Panel):
         path_row.prop(props, "custom_path_input", text="Path")
         
         # Eyedropper button
-        eyedropper = path_row.operator("boneminmax.path_eyedropper", text="", icon='EYEDROPPER')
+        eyedropper = path_row.operator("anim.path_eyedropper", text="", icon='EYEDROPPER')
         
         # Show listening status and disable button when active
         if props.path_eyedropper_active:
@@ -219,7 +283,7 @@ class BONEMINMAX_PT_main_panel(bpy.types.Panel):
         
         if props.custom_path_input:
             # Auto-detect and show the type
-            detected_type = auto_detect_path_type(props.custom_path_input)
+            detected_type = auto_detect_path_type(context.active_object, props.custom_path_input)
             
             # Show detected type
             type_row = add_box.row()
@@ -229,7 +293,7 @@ class BONEMINMAX_PT_main_panel(bpy.types.Panel):
                 type_row.label(text="Detected: Float Property", icon='DRIVER')
             
             # Validate button
-            add_box.operator("boneminmax.validate_path", text="Validate", icon='CHECKMARK')
+            add_box.operator("scene.validate_path", text="Validate", icon='CHECKMARK')
             
             # Show appropriate value controls based on detected type
             if detected_type == 'FLOAT':
@@ -242,7 +306,7 @@ class BONEMINMAX_PT_main_panel(bpy.types.Panel):
                 row.prop(props, "path_true_value", text="True")
             
             # Add button
-            add_box.operator("boneminmax.add_path_target", text="Add", icon='PLUS')
+            add_box.operator("scene.add_path_target", text="Add", icon='PLUS')
         
         # Target list
         path_data = get_path_list_data(props)
@@ -272,14 +336,12 @@ class BONEMINMAX_PT_main_panel(bpy.types.Panel):
                 btn_col = row.column(align=True)
                 
                 # Edit button
-                edit_op = btn_col.operator("boneminmax.edit_path_target", text="", icon='GREASEPENCIL')
+                edit_op = btn_col.operator("scene.edit_path_target", text="", icon='GREASEPENCIL')
                 edit_op.key_to_edit = path
                 
                 # Remove button
-                remove_op = btn_col.operator("boneminmax.remove_path_target", text="", icon='X')
+                remove_op = btn_col.operator("scene.remove_path_target", text="", icon='X')
                 remove_op.key_to_remove = path
-
-
 
     def draw_bone_source(self, layout, props, context):
         """Draw bone source controls."""
@@ -287,8 +349,8 @@ class BONEMINMAX_PT_main_panel(bpy.types.Panel):
         row = layout.row(align=True)
         row.scale_y = 1.2
         
-        min_btn = row.operator("boneminmax.record_from_min", text="Record Min")
-        max_btn = row.operator("boneminmax.record_from_max", text="Record Max")
+        min_btn = row.operator("anim.record_from_min", text="Record Min")
+        max_btn = row.operator("anim.record_from_max", text="Record Max")
         
         # Status display
         if props.from_bone:
@@ -322,8 +384,8 @@ class BONEMINMAX_PT_main_panel(bpy.types.Panel):
         row = layout.row(align=True)
         row.scale_y = 1.2
         
-        row.operator("boneminmax.record_object_min", text="Record Min")
-        row.operator("boneminmax.record_object_max", text="Record Max")
+        row.operator("anim.record_object_min", text="Record Min")
+        row.operator("anim.record_object_max", text="Record Max")
         
         # Status display
         if props.from_object:
@@ -356,8 +418,8 @@ class BONEMINMAX_PT_main_panel(bpy.types.Panel):
         # Record buttons
         row = layout.row(align=True)
         row.scale_y = 1.2
-        row.operator("boneminmax.record_to_min_pose", text="Record Min Pose")
-        row.operator("boneminmax.record_to_max_pose", text="Record Max Pose")
+        row.operator("pose.record_to_min_pose", text="Record Min Pose")
+        row.operator("pose.record_to_max_pose", text="Record Max Pose")
         
         # Target list
         to_data = get_to_bones_data(props)
@@ -383,7 +445,7 @@ class BONEMINMAX_PT_main_panel(bpy.types.Panel):
                     col.scale_y = 0.8
                     
                     # Remove button
-                    op = row.operator("boneminmax.remove_pose_bone", text="", icon='X')
+                    op = row.operator("pose.remove_pose_bone", text="", icon='X')
                     op.bone_name = bone_name
 
     def draw_shapekey_targets(self, layout, props):
@@ -397,7 +459,7 @@ class BONEMINMAX_PT_main_panel(bpy.types.Panel):
         obj_row.prop_search(props, "shapekey_target_object", bpy.data, "objects", text="Object")
         
         # Object eyedropper button
-        eyedropper = obj_row.operator("boneminmax.object_eyedropper", text="", icon='EYEDROPPER')
+        eyedropper = obj_row.operator("anim.object_eyedropper", text="", icon='EYEDROPPER')
         eyedropper.target_property = "shapekey_target_object"
         
         # Show active status and disable when active
@@ -420,7 +482,7 @@ class BONEMINMAX_PT_main_panel(bpy.types.Panel):
                     row.prop(props, "shapekey_max_value", text="Max")
                     
                     # Add button
-                    add_box.operator("boneminmax.add_shapekey_target", text="Add", icon='PLUS')
+                    add_box.operator("mesh.add_shapekey_target", text="Add", icon='PLUS')
             else:
                 add_box.label(text="No shape keys found", icon='INFO')
         
@@ -445,55 +507,16 @@ class BONEMINMAX_PT_main_panel(bpy.types.Panel):
                 btn_col = row.column(align=True)
                 
                 # Edit button
-                edit_op = btn_col.operator("boneminmax.edit_shapekey_target", text="", icon='GREASEPENCIL')
+                edit_op = btn_col.operator("mesh.edit_shapekey_target", text="", icon='GREASEPENCIL')
                 edit_op.key_to_edit = key
                 
                 # Remove button
-                remove_op = btn_col.operator("boneminmax.remove_shapekey_target", text="", icon='X')
+                remove_op = btn_col.operator("mesh.remove_shapekey_target", text="", icon='X')
                 remove_op.key_to_remove = key
 
-
-    def draw_actions_panel(self, layout, props, context):
-        """Draw action buttons."""
-        box = layout.box()
-        
-        # Status check
-        source_ready = self.get_source_status(props)
-        target_count = self.get_target_count(props)
-        can_create = source_ready and target_count > 0
-        
-        # Status message
-        if can_create:
-            box.label(text="Ready to create drivers", icon='CHECKMARK')
-        else:
-            box.label(text="Set up source and targets", icon='INFO')
-        
-        # Action buttons
-        col = box.column(align=True)
-        col.scale_y = 1.3
-        
-        # Create button
-        create_row = col.row()
-        create_row.enabled = bool(can_create)
-        create_row.operator("boneminmax.create_drivers", text="Create Drivers", icon='PLUS')
-        
-        # Constraint buttons section - side by side
-        col.separator(factor=0.5)
-        constraint_row = col.row(align=True)
-        constraint_row.scale_y = 1.0
-        constraint_row.enabled = bool(source_ready)
-        
-        # Lock to One Axis button
-        constraint_row.operator("boneminmax.one_axis_source_limit", text="Lock to one axis", icon='LOCKED')
-        
-        # Limit All Transforms button  
-        constraint_row.operator("boneminmax.limit_source_transforms", text="Lock Recorded", icon='CONSTRAINT')
-        
-        col.separator(factor=0.5)
-        
-        # Remove button
-        col.operator("boneminmax.remove_drivers", text="Remove Drivers", icon='REMOVE')
-
+    #---------------------------------------
+    # Utils
+    #---------------------------------------
     def get_source_status(self, props):
         """Check if source is properly configured (works for both bone and object)."""
         # Check bone source
@@ -515,18 +538,16 @@ class BONEMINMAX_PT_main_panel(bpy.types.Panel):
             return len(get_path_list_data(props))
         return 0
 
-
-
-# List of UI classes for registration
+#---------------------------------------
+# Registration
+#---------------------------------------
 classes = (
     BONEMINMAX_PT_main_panel,
 )
 
-
 def register():
     for cls in classes:
         bpy.utils.register_class(cls)
-
 
 def unregister():
     for cls in reversed(classes):
