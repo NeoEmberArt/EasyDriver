@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Easy Driver",
     "author": "NeoEmberArts",
-    "version": (1, 3, 0), #MAJOR.MINOR.PATCH - 8/30/2025
+    "version": (1, 4, 0), #MAJOR.MINOR.PATCH 09/22/2025
     "blender": (4, 2, 0),
     "location": "View3D > Sidebar > Rigging",
     "description": "Technical rigging made easier! Map transformations from a bone or obect to a custom pose/toggle/value/shapekey via automatically created drivers; Auto clamped and automatic mapping. Auto detects axis of change and the mimimum and maximum values.",
@@ -10,7 +10,6 @@ bl_info = {
 }
 
 import bpy
-
 from . import classes
 from . import ui
 
@@ -22,16 +21,25 @@ def register():
     bpy.types.Scene.driver_recorder_props = bpy.props.PointerProperty(type=classes.DriverRecorderProperties)
     bpy.types.Scene.show_source = bpy.props.BoolProperty(default=True)
     bpy.types.Scene.show_targets = bpy.props.BoolProperty(default=True)
+    
+    # Optional: Add fine tune mode property if not already in classes
+    if not hasattr(bpy.types.Scene, 'source_fine_tune_mode'):
+        bpy.types.Scene.source_fine_tune_mode = bpy.props.BoolProperty(default=False)
 
 def unregister():
     ui.unregister()
     classes.unregister()
-    if hasattr(bpy.types.Scene, 'driver_recorder_props'):
-        del bpy.types.Scene.driver_recorder_props
-    if hasattr(bpy.types.Scene, 'show_source'):
-        del bpy.types.Scene.show_source
-    if hasattr(bpy.types.Scene, 'show_targets'):
-        del bpy.types.Scene.show_targets
+    # Clean up scene properties
+    scene_props = [
+        'driver_recorder_props',
+        'show_source', 
+        'show_targets',
+        'source_fine_tune_mode'
+    ]
+    
+    for prop in scene_props:
+        if hasattr(bpy.types.Scene, prop):
+            delattr(bpy.types.Scene, prop)
 
 if __name__ == "__main__":
     register()
