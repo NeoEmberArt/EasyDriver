@@ -9,15 +9,36 @@ from .core_functions import (
     set_path_list_data, validate_custom_path, createDriver, update_shapekey_value, auto_detect_path_type,
     update_fine_tune_min_value, update_fine_tune_max_value, update_fine_tune_axis, 
     update_fine_tune_object_min_value, update_fine_tune_object_max_value, 
-    update_fine_tune_object_axis, parse_target_path, get_mirrored_name, mirror_source, mirror_pose_targets, mirror_shapekey_targets
+    update_fine_tune_object_axis, parse_target_path, get_mirrored_name, mirror_source, mirror_pose_targets, mirror_shapekey_targets,
+    auto_apply_armature_source, auto_apply_bone_source, auto_apply_object_source
 )
-
 
 #---------------------------------------
 # List Properties/Variables here
 #---------------------------------------
 class DriverRecorderProperties(bpy.types.PropertyGroup):
     # Add this where you register other scene properties
+    manual_source_armature: bpy.props.PointerProperty(
+        name="Armature",
+        type=bpy.types.Object,
+        poll=lambda self, obj: obj.type == 'ARMATURE',
+        description="Select armature for source bone",
+        update=auto_apply_armature_source  # Remove lambda wrapper
+    )
+
+    manual_source_bone: bpy.props.StringProperty(
+        name="Bone",
+        description="Select bone from armature",
+        update=auto_apply_bone_source  # Remove lambda wrapper
+    )
+
+    manual_source_object: bpy.props.PointerProperty(
+        name="Object",
+        type=bpy.types.Object,
+        description="Select object as source",
+        update=auto_apply_object_source  # Remove lambda wrapper
+    )
+    
     bpy.types.Scene.source_fine_tune_mode = bpy.props.BoolProperty(
         name="Source Fine Tune Mode",
         default=False
@@ -40,10 +61,12 @@ class DriverRecorderProperties(bpy.types.PropertyGroup):
             ("ROT_X", "Rot X", "Rotation X"),
             ("ROT_Y", "Rot Y", "Rotation Y"),
             ("ROT_Z", "Rot Z", "Rotation Z"),
+            ("SCALE_X", "Scale X", "Scale X"),
+            ("SCALE_Y", "Scale Y", "Scale Y"),
+            ("SCALE_Z", "Scale Z", "Scale Z"),
         ],
         update=update_fine_tune_axis
     )
-
     # Object fine tune properties
     fine_tune_object_min_value: bpy.props.FloatProperty(
         name="Min Value",
@@ -62,6 +85,9 @@ class DriverRecorderProperties(bpy.types.PropertyGroup):
             ("ROT_X", "Rot X", "Rotation X"),
             ("ROT_Y", "Rot Y", "Rotation Y"),
             ("ROT_Z", "Rot Z", "Rotation Z"),
+            ("SCALE_X", "Scale X", "Scale X"),
+            ("SCALE_Y", "Scale Y", "Scale Y"),
+            ("SCALE_Z", "Scale Z", "Scale Z"),
         ],
         update=update_fine_tune_object_axis
     )
@@ -95,6 +121,8 @@ class DriverRecorderProperties(bpy.types.PropertyGroup):
     from_max_location: bpy.props.FloatVectorProperty(size=3)
     from_min_rotation: bpy.props.FloatVectorProperty(size=3)
     from_max_rotation: bpy.props.FloatVectorProperty(size=3)
+    from_min_scale: bpy.props.FloatVectorProperty(size=3, default=(1.0, 1.0, 1.0))
+    from_max_scale: bpy.props.FloatVectorProperty(size=3, default=(1.0, 1.0, 1.0))
     from_detected_axis: bpy.props.StringProperty(default="")  # e.g., "LOC X"
     
     # FROM object data
@@ -105,6 +133,8 @@ class DriverRecorderProperties(bpy.types.PropertyGroup):
     from_object_max_location: bpy.props.FloatVectorProperty(size=3)
     from_object_min_rotation: bpy.props.FloatVectorProperty(size=3)
     from_object_max_rotation: bpy.props.FloatVectorProperty(size=3)
+    from_object_min_scale: bpy.props.FloatVectorProperty(size=3, default=(1.0, 1.0, 1.0))
+    from_object_max_scale: bpy.props.FloatVectorProperty(size=3, default=(1.0, 1.0, 1.0))
     from_object_detected_axis: bpy.props.StringProperty(default="")
     
     # Target type selection
@@ -120,7 +150,6 @@ class DriverRecorderProperties(bpy.types.PropertyGroup):
     
     # Custom Pose data (JSON string)
     to_bones_data: bpy.props.StringProperty(default="{}")
-    
     # Shapekey data - changed to StringProperty for searchable dropdown
     shapekey_target_object: bpy.props.StringProperty(
         name="Target Object",
@@ -287,6 +316,7 @@ class ANIM_OT_object_eyedropper(bpy.types.Operator):
         
         return None
 
+
 class ANIM_OT_path_eyedropper(bpy.types.Operator):
     """Eyedropper tool to capture property data paths by detecting changes"""
     bl_idname = "anim.path_eyedropper"
@@ -360,6 +390,15 @@ class ANIM_OT_path_eyedropper(bpy.types.Operator):
         except:
             return value
     
+    def safe_get_attr(self, obj, attr, default=None):
+        """Safely get an attribute, returning default if it doesn't exist"""
+        try:
+            if hasattr(obj, attr):
+                return getattr(obj, attr)
+            return default
+        except:
+            return default
+    
     def values_equal(self, val1, val2, tolerance=0.001):
         """Compare two values with tolerance for floats"""
         try:
@@ -385,17 +424,21 @@ class ANIM_OT_path_eyedropper(bpy.types.Operator):
             # Basic object properties
             obj_data['location'] = self.safe_copy_value(obj.location)
             obj_data['rotation_euler'] = self.safe_copy_value(obj.rotation_euler)
+            obj_data['rotation_quaternion'] = self.safe_copy_value(obj.rotation_quaternion)
             obj_data['scale'] = self.safe_copy_value(obj.scale)
             obj_data['hide_viewport'] = obj.hide_viewport
             obj_data['hide_render'] = obj.hide_render
+            obj_data['hide_select'] = obj.hide_select
             
             # Display properties
             if hasattr(obj, 'display'):
-                display_props = ['show_shadows', 'show_in_front', 'show_wire', 'show_all_edges']
+                display_props = ['show_shadows', 'show_in_front', 'show_wire', 'show_all_edges', 
+                               'show_transparent', 'show_only_shape_key', 'show_bounds']
                 obj_data['display'] = {}
                 for prop in display_props:
-                    if hasattr(obj.display, prop):
-                        obj_data['display'][prop] = getattr(obj.display, prop)
+                    val = self.safe_get_attr(obj.display, prop)
+                    if val is not None:
+                        obj_data['display'][prop] = val
             
             # Collision properties
             if hasattr(obj, 'collision') and obj.collision:
@@ -404,8 +447,9 @@ class ANIM_OT_path_eyedropper(bpy.types.Operator):
                                  'thickness_outer', 'use']
                 obj_data['collision'] = {}
                 for prop in collision_props:
-                    if hasattr(obj.collision, prop):
-                        obj_data['collision'][prop] = self.safe_copy_value(getattr(obj.collision, prop))
+                    val = self.safe_get_attr(obj.collision, prop)
+                    if val is not None:
+                        obj_data['collision'][prop] = self.safe_copy_value(val)
             
             # Rigid body properties
             if hasattr(obj, 'rigid_body') and obj.rigid_body:
@@ -413,8 +457,9 @@ class ANIM_OT_path_eyedropper(bpy.types.Operator):
                            'use_margin', 'collision_margin', 'kinematic', 'enabled']
                 obj_data['rigid_body'] = {}
                 for prop in rb_props:
-                    if hasattr(obj.rigid_body, prop):
-                        obj_data['rigid_body'][prop] = self.safe_copy_value(getattr(obj.rigid_body, prop))
+                    val = self.safe_get_attr(obj.rigid_body, prop)
+                    if val is not None:
+                        obj_data['rigid_body'][prop] = self.safe_copy_value(val)
             
             # Constraints
             if obj.constraints:
@@ -424,16 +469,29 @@ class ANIM_OT_path_eyedropper(bpy.types.Operator):
                         'influence': constraint.influence,
                         'mute': constraint.mute
                     }
-                    if hasattr(constraint, 'target'):
-                        const_data['target'] = constraint.target
+                    # Add constraint-specific properties safely
+                    constraint_props = ['target', 'subtarget', 'use_x', 'use_y', 'use_z']
+                    for prop in constraint_props:
+                        val = self.safe_get_attr(constraint, prop)
+                        if val is not None:
+                            const_data[prop] = val
                     obj_data['constraints'][constraint.name] = const_data
             
-            # Pose bone constraints (for armatures)
+            # Pose bones (for armatures)
             if obj.type == 'ARMATURE' and obj.pose:
                 obj_data['pose_bones'] = {}
                 for pose_bone in obj.pose.bones:
-                    pose_bone_data = {}
+                    pose_bone_data = {
+                        'location': self.safe_copy_value(pose_bone.location),
+                        'rotation_euler': self.safe_copy_value(pose_bone.rotation_euler),
+                        'rotation_quaternion': self.safe_copy_value(pose_bone.rotation_quaternion),
+                        'scale': self.safe_copy_value(pose_bone.scale),
+                        'lock_location': self.safe_copy_value(pose_bone.lock_location),
+                        'lock_rotation': self.safe_copy_value(pose_bone.lock_rotation),
+                        'lock_scale': self.safe_copy_value(pose_bone.lock_scale)
+                    }
                     
+                    # Pose bone constraints
                     if pose_bone.constraints:
                         pose_bone_data['constraints'] = {}
                         for constraint in pose_bone.constraints:
@@ -444,6 +502,15 @@ class ANIM_OT_path_eyedropper(bpy.types.Operator):
                             pose_bone_data['constraints'][constraint.name] = const_data
                     
                     obj_data['pose_bones'][pose_bone.name] = pose_bone_data
+            
+            # Shape keys
+            if obj.data and hasattr(obj.data, 'shape_keys') and obj.data.shape_keys:
+                obj_data['shape_keys'] = {}
+                for key_block in obj.data.shape_keys.key_blocks:
+                    obj_data['shape_keys'][key_block.name] = {
+                        'value': key_block.value,
+                        'mute': key_block.mute
+                    }
             
             # Modifiers
             if obj.modifiers:
@@ -456,21 +523,89 @@ class ANIM_OT_path_eyedropper(bpy.types.Operator):
                     
                     # Common modifier properties
                     mod_props = ['strength', 'factor', 'offset', 'ratio', 'levels', 'angle_limit', 
-                               'iterations', 'lambda_factor', 'lambda_border', 'use_x', 'use_y', 'use_z']
+                               'iterations', 'lambda_factor', 'lambda_border', 'use_x', 'use_y', 'use_z',
+                               'width', 'segments', 'profile', 'limit_method', 'use_only_vertices',
+                               'use_limit_to_selection', 'use_smooth', 'use_repeat', 'use_clamp']
                     for prop in mod_props:
-                        if hasattr(modifier, prop):
-                            mod_data[prop] = self.safe_copy_value(getattr(modifier, prop))
+                        val = self.safe_get_attr(modifier, prop)
+                        if val is not None:
+                            mod_data[prop] = self.safe_copy_value(val)
                     
                     obj_data['modifiers'][modifier.name] = mod_data
             
+            # Custom properties
+            obj_data['custom_props'] = {}
+            for key in obj.keys():
+                obj_data['custom_props'][key] = self.safe_copy_value(obj[key])
+            
             self._initial_state[f"objects.{obj.name}"] = obj_data
+        
+        # Monitor cameras
+        for camera in bpy.data.cameras:
+            cam_data = {
+                'lens': camera.lens,
+                'sensor_width': camera.sensor_width,
+                'sensor_height': camera.sensor_height,
+                'clip_start': camera.clip_start,
+                'clip_end': camera.clip_end,
+                'type': camera.type,
+                'ortho_scale': camera.ortho_scale,
+                'shift_x': camera.shift_x,
+                'shift_y': camera.shift_y,
+                'dof': {}
+            }
+            
+            # Depth of field properties
+            if hasattr(camera, 'dof'):
+                dof_props = ['use_dof', 'focus_distance', 'aperture_fstop', 'aperture_blades', 'aperture_rotation']
+                for prop in dof_props:
+                    val = self.safe_get_attr(camera.dof, prop)
+                    if val is not None:
+                        cam_data['dof'][prop] = val
+            
+            # Custom properties
+            cam_data['custom_props'] = {}
+            for key in camera.keys():
+                cam_data['custom_props'][key] = self.safe_copy_value(camera[key])
+            
+            self._initial_state[f"cameras.{camera.name}"] = cam_data
+        
+        # Monitor lights
+        for light in bpy.data.lights:
+            light_data = {
+                'type': light.type,
+                'energy': light.energy,
+                'color': self.safe_copy_value(light.color),
+                'use_shadow': light.use_shadow,
+                'shadow_soft_size': light.shadow_soft_size,
+                'cutoff_distance': light.cutoff_distance,
+                'use_custom_distance': light.use_custom_distance
+            }
+            
+            # Type-specific properties
+            type_props = ['angle', 'spot_size', 'spot_blend', 'size', 'size_y', 'shape']
+            for prop in type_props:
+                val = self.safe_get_attr(light, prop)
+                if val is not None:
+                    light_data[prop] = val
+            
+            # Custom properties
+            light_data['custom_props'] = {}
+            for key in light.keys():
+                light_data['custom_props'][key] = self.safe_copy_value(light[key])
+            
+            self._initial_state[f"lights.{light.name}"] = light_data
         
         # Monitor armatures
         for armature in bpy.data.armatures:
             arm_data = {}
             
             # Armature display properties
-            arm_data['show_bone_custom_shapes'] = armature.show_bone_custom_shapes
+            arm_props = ['show_bone_custom_shapes', 'show_names', 'show_axes', 'display_type']
+            for prop in arm_props:
+                val = self.safe_get_attr(armature, prop)
+                if val is not None:
+                    arm_data[prop] = val
             
             # Bone collections visibility
             arm_data['collections'] = {}
@@ -481,37 +616,64 @@ class ANIM_OT_path_eyedropper(bpy.types.Operator):
                 collections_attr = 'collections'
             
             if collections_attr:
-                collections = getattr(armature, collections_attr)
-                for collection in collections:
-                    arm_data['collections'][collection.name] = {
-                        'is_visible': collection.is_visible,
-                        'attr_name': collections_attr  # Store which attribute to use
-                    }
+                try:
+                    collections = getattr(armature, collections_attr)
+                    for collection in collections:
+                        arm_data['collections'][collection.name] = {
+                            'is_visible': collection.is_visible,
+                            'attr_name': collections_attr
+                        }
+                except:
+                    pass
             
             # Bone properties
             arm_data['bones'] = {}
             for bone in armature.bones:
                 bone_props = ['hide_select', 'hide', 'use_deform', 'use_inherit_rotation', 
-                             'use_inherit_scale', 'use_local_location', 'use_relative_parent']
+                             'use_inherit_scale', 'use_local_location', 'use_relative_parent',
+                             'envelope_distance', 'envelope_weight', 'head_radius', 'tail_radius']
                 bone_data = {}
                 for prop in bone_props:
-                    if hasattr(bone, prop):
-                        bone_data[prop] = getattr(bone, prop)
+                    val = self.safe_get_attr(bone, prop)
+                    if val is not None:
+                        bone_data[prop] = self.safe_copy_value(val)
                 arm_data['bones'][bone.name] = bone_data
+            
+            # Custom properties
+            arm_data['custom_props'] = {}
+            for key in armature.keys():
+                arm_data['custom_props'][key] = self.safe_copy_value(armature[key])
             
             self._initial_state[f"armatures.{armature.name}"] = arm_data
         
         # Monitor materials
         for mat in bpy.data.materials:
+            mat_data = {}
+            
+            # Basic material properties - check each one safely
+            mat_props = ['use_backface_culling', 'blend_method', 'shadow_method', 'alpha_threshold', 
+                        'use_screen_refraction', 'refraction_depth', 'use_sss_translucency']
+            for prop in mat_props:
+                val = self.safe_get_attr(mat, prop)
+                if val is not None:
+                    mat_data[prop] = val
+            
+            # Node tree
             if mat.use_nodes and mat.node_tree:
-                mat_data = {'nodes': {}}
+                mat_data['nodes'] = {}
                 
                 for node in mat.node_tree.nodes:
                     node_data = {}
                     
-                    # Node mute
-                    if hasattr(node, 'mute'):
-                        node_data['mute'] = node.mute
+                    # Node properties - check safely
+                    node_props = ['mute', 'hide', 'factor', 'inputs_clear', 'use_clamp', 
+                                 'operation', 'blend_type', 'fac', 'roughness', 'anisotropy', 
+                                 'rotation', 'normal', 'clearcoat', 'clearcoat_roughness', 
+                                 'ior', 'transmission', 'emission_strength']
+                    for prop in node_props:
+                        val = self.safe_get_attr(node, prop)
+                        if val is not None:
+                            node_data[prop] = self.safe_copy_value(val)
                     
                     # Input values
                     if hasattr(node, 'inputs'):
@@ -523,9 +685,36 @@ class ANIM_OT_path_eyedropper(bpy.types.Operator):
                                 except:
                                     pass
                     
+                    # Output values (some nodes have editable outputs)
+                    if hasattr(node, 'outputs'):
+                        node_data['outputs'] = {}
+                        for i, output_socket in enumerate(node.outputs):
+                            if hasattr(output_socket, 'default_value'):
+                                try:
+                                    node_data['outputs'][i] = self.safe_copy_value(output_socket.default_value)
+                                except:
+                                    pass
+                    
+                    # ColorRamp elements
+                    if hasattr(node, 'color_ramp') and node.color_ramp:
+                        try:
+                            node_data['color_ramp'] = {'elements': {}}
+                            for i, element in enumerate(node.color_ramp.elements):
+                                node_data['color_ramp']['elements'][i] = {
+                                    'position': element.position,
+                                    'color': self.safe_copy_value(element.color)
+                                }
+                        except:
+                            pass
+                    
                     mat_data['nodes'][node.name] = node_data
-                
-                self._initial_state[f"materials.{mat.name}"] = mat_data
+            
+            # Custom properties
+            mat_data['custom_props'] = {}
+            for key in mat.keys():
+                mat_data['custom_props'][key] = self.safe_copy_value(mat[key])
+            
+            self._initial_state[f"materials.{mat.name}"] = mat_data
         
         # Monitor scenes
         for scene in bpy.data.scenes:
@@ -535,26 +724,61 @@ class ANIM_OT_path_eyedropper(bpy.types.Operator):
             scene_data['frame_current'] = scene.frame_current
             scene_data['frame_start'] = scene.frame_start
             scene_data['frame_end'] = scene.frame_end
+            scene_data['frame_step'] = scene.frame_step
             
             # Physics properties
             scene_data['use_gravity'] = scene.use_gravity
             scene_data['gravity'] = self.safe_copy_value(scene.gravity)
             
+            # Render properties
+            scene_data['render'] = {}
+            render_props = ['resolution_x', 'resolution_y', 'resolution_percentage', 'fps', 'fps_base']
+            for prop in render_props:
+                val = self.safe_get_attr(scene.render, prop)
+                if val is not None:
+                    scene_data['render'][prop] = val
+            
             # Render engine properties
             if hasattr(scene, 'eevee'):
                 eevee_props = ['taa_samples', 'taa_render_samples', 'use_taa_reprojection', 
-                              'use_ssr', 'use_ssr_refraction', 'use_bloom', 'use_motion_blur']
+                              'use_ssr', 'use_ssr_refraction', 'use_bloom', 'use_motion_blur',
+                              'motion_blur_shutter', 'bloom_threshold', 'bloom_knee', 'bloom_radius']
                 scene_data['eevee'] = {}
                 for prop in eevee_props:
-                    if hasattr(scene.eevee, prop):
-                        scene_data['eevee'][prop] = getattr(scene.eevee, prop)
+                    val = self.safe_get_attr(scene.eevee, prop)
+                    if val is not None:
+                        scene_data['eevee'][prop] = val
             
             if hasattr(scene, 'cycles'):
-                cycles_props = ['samples', 'preview_samples', 'use_denoising', 'denoiser']
+                cycles_props = ['samples', 'preview_samples', 'use_denoising', 'denoiser',
+                               'max_bounces', 'diffuse_bounces', 'glossy_bounces', 'transmission_bounces']
                 scene_data['cycles'] = {}
                 for prop in cycles_props:
-                    if hasattr(scene.cycles, prop):
-                        scene_data['cycles'][prop] = getattr(scene.cycles, prop)
+                    val = self.safe_get_attr(scene.cycles, prop)
+                    if val is not None:
+                        scene_data['cycles'][prop] = val
+            
+            # World properties
+            if scene.world:
+                scene_data['world'] = {
+                    'use_nodes': scene.world.use_nodes,
+                    'color': self.safe_copy_value(scene.world.color)
+                }
+                
+                # World node tree
+                if scene.world.use_nodes and scene.world.node_tree:
+                    scene_data['world']['nodes'] = {}
+                    for node in scene.world.node_tree.nodes:
+                        node_data = {}
+                        if hasattr(node, 'inputs'):
+                            node_data['inputs'] = {}
+                            for i, input_socket in enumerate(node.inputs):
+                                if hasattr(input_socket, 'default_value'):
+                                    try:
+                                        node_data['inputs'][i] = self.safe_copy_value(input_socket.default_value)
+                                    except:
+                                        pass
+                        scene_data['world']['nodes'][node.name] = node_data
             
             self._initial_state[f"scenes.{scene.name}"] = scene_data
 
@@ -570,36 +794,39 @@ class ANIM_OT_path_eyedropper(bpy.types.Operator):
             initial_obj = self._initial_state[obj_key]
             
             # Basic properties
-            basic_props = ['location', 'rotation_euler', 'scale', 'hide_viewport', 'hide_render']
+            basic_props = ['location', 'rotation_euler', 'rotation_quaternion', 'scale', 
+                          'hide_viewport', 'hide_render', 'hide_select']
             for prop in basic_props:
                 if prop in initial_obj:
                     current_val = getattr(obj, prop)
                     if not self.values_equal(current_val, initial_obj[prop]):
+                        # Check for array index
+                        if hasattr(current_val, '__len__') and not isinstance(current_val, str):
+                            for i, (curr, init) in enumerate(zip(current_val, initial_obj[prop])):
+                                if not self.values_equal(curr, init):
+                                    return f'bpy.data.objects["{obj.name}"].{prop}[{i}]'
                         return f'bpy.data.objects["{obj.name}"].{prop}'
             
             # Display properties
             if 'display' in initial_obj and hasattr(obj, 'display'):
                 for prop, initial_val in initial_obj['display'].items():
-                    if hasattr(obj.display, prop):
-                        current_val = getattr(obj.display, prop)
-                        if current_val != initial_val:
-                            return f'bpy.data.objects["{obj.name}"].display.{prop}'
+                    current_val = self.safe_get_attr(obj.display, prop)
+                    if current_val is not None and current_val != initial_val:
+                        return f'bpy.data.objects["{obj.name}"].display.{prop}'
             
             # Collision properties
             if 'collision' in initial_obj and hasattr(obj, 'collision') and obj.collision:
                 for prop, initial_val in initial_obj['collision'].items():
-                    if hasattr(obj.collision, prop):
-                        current_val = getattr(obj.collision, prop)
-                        if not self.values_equal(current_val, initial_val):
-                            return f'bpy.data.objects["{obj.name}"].collision.{prop}'
+                    current_val = self.safe_get_attr(obj.collision, prop)
+                    if current_val is not None and not self.values_equal(current_val, initial_val):
+                        return f'bpy.data.objects["{obj.name}"].collision.{prop}'
             
             # Rigid body properties
             if 'rigid_body' in initial_obj and hasattr(obj, 'rigid_body') and obj.rigid_body:
                 for prop, initial_val in initial_obj['rigid_body'].items():
-                    if hasattr(obj.rigid_body, prop):
-                        current_val = getattr(obj.rigid_body, prop)
-                        if not self.values_equal(current_val, initial_val):
-                            return f'bpy.data.objects["{obj.name}"].rigid_body.{prop}'
+                    current_val = self.safe_get_attr(obj.rigid_body, prop)
+                    if current_val is not None and not self.values_equal(current_val, initial_val):
+                        return f'bpy.data.objects["{obj.name}"].rigid_body.{prop}'
             
             # Constraints
             if 'constraints' in initial_obj and obj.constraints:
@@ -607,28 +834,52 @@ class ANIM_OT_path_eyedropper(bpy.types.Operator):
                     if constraint.name in initial_obj['constraints']:
                         initial_const = initial_obj['constraints'][constraint.name]
                         
-                        if not self.values_equal(constraint.influence, initial_const['influence']):
-                            return f'bpy.data.objects["{obj.name}"].constraints["{constraint.name}"].influence'
-                        
-                        if constraint.mute != initial_const['mute']:
-                            return f'bpy.data.objects["{obj.name}"].constraints["{constraint.name}"].mute'
+                        for prop, initial_val in initial_const.items():
+                            current_val = self.safe_get_attr(constraint, prop)
+                            if current_val is not None and not self.values_equal(current_val, initial_val):
+                                return f'bpy.data.objects["{obj.name}"].constraints["{constraint.name}"].{prop}'
             
-            # Pose bone constraints
+            # Pose bones
             if 'pose_bones' in initial_obj and obj.type == 'ARMATURE' and obj.pose:
                 for pose_bone in obj.pose.bones:
                     if pose_bone.name in initial_obj['pose_bones']:
                         initial_pose_bone = initial_obj['pose_bones'][pose_bone.name]
                         
+                        # Transform properties
+                        transform_props = ['location', 'rotation_euler', 'rotation_quaternion', 'scale',
+                                         'lock_location', 'lock_rotation', 'lock_scale']
+                        for prop in transform_props:
+                            if prop in initial_pose_bone:
+                                current_val = getattr(pose_bone, prop)
+                                if not self.values_equal(current_val, initial_pose_bone[prop]):
+                                    # Check for array index
+                                    if hasattr(current_val, '__len__') and not isinstance(current_val, str):
+                                        for i, (curr, init) in enumerate(zip(current_val, initial_pose_bone[prop])):
+                                            if not self.values_equal(curr, init):
+                                                return f'bpy.data.objects["{obj.name}"].pose.bones["{pose_bone.name}"].{prop}[{i}]'
+                                    return f'bpy.data.objects["{obj.name}"].pose.bones["{pose_bone.name}"].{prop}'
+                        
+                        # Constraints
                         if 'constraints' in initial_pose_bone and pose_bone.constraints:
                             for constraint in pose_bone.constraints:
                                 if constraint.name in initial_pose_bone['constraints']:
                                     initial_const = initial_pose_bone['constraints'][constraint.name]
                                     
-                                    if not self.values_equal(constraint.influence, initial_const['influence']):
-                                        return f'bpy.data.objects["{obj.name}"].pose.bones["{pose_bone.name}"].constraints["{constraint.name}"].influence'
-                                    
-                                    if constraint.mute != initial_const['mute']:
-                                        return f'bpy.data.objects["{obj.name}"].pose.bones["{pose_bone.name}"].constraints["{constraint.name}"].mute'
+                                    for prop, initial_val in initial_const.items():
+                                        current_val = self.safe_get_attr(constraint, prop)
+                                        if current_val is not None and not self.values_equal(current_val, initial_val):
+                                            return f'bpy.data.objects["{obj.name}"].pose.bones["{pose_bone.name}"].constraints["{constraint.name}"].{prop}'
+            
+            # Shape keys
+            if 'shape_keys' in initial_obj and obj.data and hasattr(obj.data, 'shape_keys') and obj.data.shape_keys:
+                for key_block in obj.data.shape_keys.key_blocks:
+                    if key_block.name in initial_obj['shape_keys']:
+                        initial_key = initial_obj['shape_keys'][key_block.name]
+                        
+                        for prop, initial_val in initial_key.items():
+                            current_val = getattr(key_block, prop)
+                            if not self.values_equal(current_val, initial_val):
+                                return f'bpy.data.objects["{obj.name}"].data.shape_keys.key_blocks["{key_block.name}"].{prop}'
             
             # Modifiers
             if 'modifiers' in initial_obj and obj.modifiers:
@@ -637,10 +888,80 @@ class ANIM_OT_path_eyedropper(bpy.types.Operator):
                         initial_mod = initial_obj['modifiers'][modifier.name]
                         
                         for prop, initial_val in initial_mod.items():
-                            if hasattr(modifier, prop):
-                                current_val = getattr(modifier, prop)
-                                if not self.values_equal(current_val, initial_val):
-                                    return f'bpy.data.objects["{obj.name}"].modifiers["{modifier.name}"].{prop}'
+                            current_val = self.safe_get_attr(modifier, prop)
+                            if current_val is not None and not self.values_equal(current_val, initial_val):
+                                return f'bpy.data.objects["{obj.name}"].modifiers["{modifier.name}"].{prop}'
+            
+            # Custom properties
+            if 'custom_props' in initial_obj:
+                for key, initial_val in initial_obj['custom_props'].items():
+                    if key in obj:
+                        current_val = obj[key]
+                        if not self.values_equal(current_val, initial_val):
+                            return f'bpy.data.objects["{obj.name}"]["{key}"]'
+        
+        # Check cameras
+        for camera in bpy.data.cameras:
+            cam_key = f"cameras.{camera.name}"
+            if cam_key not in self._initial_state:
+                continue
+                
+            initial_cam = self._initial_state[cam_key]
+            
+            # Basic camera properties
+            cam_props = ['lens', 'sensor_width', 'sensor_height', 'clip_start', 'clip_end', 
+                        'type', 'ortho_scale', 'shift_x', 'shift_y']
+            for prop in cam_props:
+                if prop in initial_cam:
+                    current_val = getattr(camera, prop)
+                    if not self.values_equal(current_val, initial_cam[prop]):
+                        return f'bpy.data.cameras["{camera.name}"].{prop}'
+            
+            # DOF properties
+            if 'dof' in initial_cam and hasattr(camera, 'dof'):
+                for prop, initial_val in initial_cam['dof'].items():
+                    current_val = self.safe_get_attr(camera.dof, prop)
+                    if current_val is not None and not self.values_equal(current_val, initial_val):
+                        return f'bpy.data.cameras["{camera.name}"].dof.{prop}'
+            
+            # Custom properties
+            if 'custom_props' in initial_cam:
+                for key, initial_val in initial_cam['custom_props'].items():
+                    if key in camera:
+                        current_val = camera[key]
+                        if not self.values_equal(current_val, initial_val):
+                            return f'bpy.data.cameras["{camera.name}"]["{key}"]'
+        
+        # Check lights
+        for light in bpy.data.lights:
+            light_key = f"lights.{light.name}"
+            if light_key not in self._initial_state:
+                continue
+                
+            initial_light = self._initial_state[light_key]
+            
+            # Basic light properties
+            light_props = ['type', 'energy', 'color', 'use_shadow', 'shadow_soft_size', 
+                          'cutoff_distance', 'use_custom_distance', 'angle', 'spot_size', 
+                          'spot_blend', 'size', 'size_y', 'shape']
+            for prop in light_props:
+                if prop in initial_light:
+                    current_val = getattr(light, prop)
+                    if not self.values_equal(current_val, initial_light[prop]):
+                        # Check for array index (like color)
+                        if hasattr(current_val, '__len__') and not isinstance(current_val, str):
+                            for i, (curr, init) in enumerate(zip(current_val, initial_light[prop])):
+                                if not self.values_equal(curr, init):
+                                    return f'bpy.data.lights["{light.name}"].{prop}[{i}]'
+                        return f'bpy.data.lights["{light.name}"].{prop}'
+            
+            # Custom properties
+            if 'custom_props' in initial_light:
+                for key, initial_val in initial_light['custom_props'].items():
+                    if key in light:
+                        current_val = light[key]
+                        if not self.values_equal(current_val, initial_val):
+                            return f'bpy.data.lights["{light.name}"]["{key}"]'
         
         # Check armatures
         for armature in bpy.data.armatures:
@@ -651,9 +972,12 @@ class ANIM_OT_path_eyedropper(bpy.types.Operator):
             initial_arm = self._initial_state[arm_key]
             
             # Armature display properties
-            if 'show_bone_custom_shapes' in initial_arm:
-                if armature.show_bone_custom_shapes != initial_arm['show_bone_custom_shapes']:
-                    return f'bpy.data.armatures["{armature.name}"].show_bone_custom_shapes'
+            arm_props = ['show_bone_custom_shapes', 'show_names', 'show_axes', 'display_type']
+            for prop in arm_props:
+                if prop in initial_arm:
+                    current_val = self.safe_get_attr(armature, prop)
+                    if current_val is not None and current_val != initial_arm[prop]:
+                        return f'bpy.data.armatures["{armature.name}"].{prop}'
             
             # Bone collections visibility
             if 'collections' in initial_arm:
@@ -661,12 +985,15 @@ class ANIM_OT_path_eyedropper(bpy.types.Operator):
                     attr_name = initial_collection.get('attr_name', 'collections_all')
                     
                     if hasattr(armature, attr_name):
-                        collections = getattr(armature, attr_name)
-                        for collection in collections:
-                            if collection.name == collection_name:
-                                if collection.is_visible != initial_collection['is_visible']:
-                                    return f'bpy.data.armatures["{armature.name}"].{attr_name}["{collection_name}"].is_visible'
-                                break
+                        try:
+                            collections = getattr(armature, attr_name)
+                            for collection in collections:
+                                if collection.name == collection_name:
+                                    if collection.is_visible != initial_collection['is_visible']:
+                                        return f'bpy.data.armatures["{armature.name}"].{attr_name}["{collection_name}"].is_visible'
+                                    break
+                        except:
+                            pass
             
             # Bone properties
             if 'bones' in initial_arm:
@@ -675,10 +1002,117 @@ class ANIM_OT_path_eyedropper(bpy.types.Operator):
                         initial_bone = initial_arm['bones'][bone.name]
                         
                         for prop, initial_val in initial_bone.items():
-                            if hasattr(bone, prop):
-                                current_val = getattr(bone, prop)
-                                if current_val != initial_val:
-                                    return f'bpy.data.armatures["{armature.name}"].bones["{bone.name}"].{prop}'
+                            current_val = self.safe_get_attr(bone, prop)
+                            if current_val is not None and not self.values_equal(current_val, initial_val):
+                                return f'bpy.data.armatures["{armature.name}"].bones["{bone.name}"].{prop}'
+            
+            # Custom properties
+            if 'custom_props' in initial_arm:
+                for key, initial_val in initial_arm['custom_props'].items():
+                    if key in armature:
+                        current_val = armature[key]
+                        if not self.values_equal(current_val, initial_val):
+                            return f'bpy.data.armatures["{armature.name}"]["{key}"]'
+        
+        # Check materials
+        for mat in bpy.data.materials:
+            mat_key = f"materials.{mat.name}"
+            if mat_key not in self._initial_state:
+                continue
+                
+            initial_mat = self._initial_state[mat_key]
+            
+            # Basic material properties
+            for prop, initial_val in initial_mat.items():
+                if prop in ['nodes', 'custom_props']:
+                    continue
+                    
+                current_val = self.safe_get_attr(mat, prop)
+                if current_val is not None and current_val != initial_val:
+                    return f'bpy.data.materials["{mat.name}"].{prop}'
+            
+            # Node tree
+            if 'nodes' in initial_mat and mat.use_nodes and mat.node_tree:
+                for node in mat.node_tree.nodes:
+                    if node.name in initial_mat['nodes']:
+                        initial_node = initial_mat['nodes'][node.name]
+                        
+                        # Node properties
+                        for prop, initial_val in initial_node.items():
+                            if prop in ['inputs', 'outputs', 'color_ramp']:
+                                continue
+                                
+                            current_val = self.safe_get_attr(node, prop)
+                            if current_val is not None and not self.values_equal(current_val, initial_val):
+                                return f'bpy.data.materials["{mat.name}"].node_tree.nodes["{node.name}"].{prop}'
+                        
+                        # Input values
+                        if 'inputs' in initial_node and hasattr(node, 'inputs'):
+                            for i, input_socket in enumerate(node.inputs):
+                                if i in initial_node['inputs'] and hasattr(input_socket, 'default_value'):
+                                    try:
+                                        current_val = input_socket.default_value
+                                        initial_val = initial_node['inputs'][i]
+                                        
+                                        if not self.values_equal(current_val, initial_val):
+                                            # Check for array index (like color or vector inputs)
+                                            if hasattr(current_val, '__len__') and not isinstance(current_val, str):
+                                                for j, (curr, init) in enumerate(zip(current_val, initial_val)):
+                                                    if not self.values_equal(curr, init):
+                                                        return f'bpy.data.materials["{mat.name}"].node_tree.nodes["{node.name}"].inputs[{i}].default_value[{j}]'
+                                            return f'bpy.data.materials["{mat.name}"].node_tree.nodes["{node.name}"].inputs[{i}].default_value'
+                                    except:
+                                        pass
+                        
+                        # Output values
+                        if 'outputs' in initial_node and hasattr(node, 'outputs'):
+                            for i, output_socket in enumerate(node.outputs):
+                                if i in initial_node['outputs'] and hasattr(output_socket, 'default_value'):
+                                    try:
+                                        current_val = output_socket.default_value
+                                        initial_val = initial_node['outputs'][i]
+                                        
+                                        if not self.values_equal(current_val, initial_val):
+                                            # Check for array index
+                                            if hasattr(current_val, '__len__') and not isinstance(current_val, str):
+                                                for j, (curr, init) in enumerate(zip(current_val, initial_val)):
+                                                    if not self.values_equal(curr, init):
+                                                        return f'bpy.data.materials["{mat.name}"].node_tree.nodes["{node.name}"].outputs[{i}].default_value[{j}]'
+                                            return f'bpy.data.materials["{mat.name}"].node_tree.nodes["{node.name}"].outputs[{i}].default_value'
+                                    except:
+                                        pass
+                        
+                        # ColorRamp elements
+                        if 'color_ramp' in initial_node and hasattr(node, 'color_ramp') and node.color_ramp:
+                            if 'elements' in initial_node['color_ramp']:
+                                try:
+                                    for i, element in enumerate(node.color_ramp.elements):
+                                        if i in initial_node['color_ramp']['elements']:
+                                            initial_element = initial_node['color_ramp']['elements'][i]
+                                            
+                                            # Position
+                                            if 'position' in initial_element:
+                                                if not self.values_equal(element.position, initial_element['position']):
+                                                    return f'bpy.data.materials["{mat.name}"].node_tree.nodes["{node.name}"].color_ramp.elements[{i}].position'
+                                            
+                                            # Color
+                                            if 'color' in initial_element:
+                                                if not self.values_equal(element.color, initial_element['color']):
+                                                    # Check individual color components
+                                                    for j, (curr, init) in enumerate(zip(element.color, initial_element['color'])):
+                                                        if not self.values_equal(curr, init):
+                                                            return f'bpy.data.materials["{mat.name}"].node_tree.nodes["{node.name}"].color_ramp.elements[{i}].color[{j}]'
+                                                    return f'bpy.data.materials["{mat.name}"].node_tree.nodes["{node.name}"].color_ramp.elements[{i}].color'
+                                except:
+                                    pass
+            
+            # Custom properties
+            if 'custom_props' in initial_mat:
+                for key, initial_val in initial_mat['custom_props'].items():
+                    if key in mat:
+                        current_val = mat[key]
+                        if not self.values_equal(current_val, initial_val):
+                            return f'bpy.data.materials["{mat.name}"]["{key}"]'
         
         # Check scenes
         for scene in bpy.data.scenes:
@@ -689,7 +1123,7 @@ class ANIM_OT_path_eyedropper(bpy.types.Operator):
             initial_scene = self._initial_state[scene_key]
             
             # Basic scene properties
-            basic_props = ['frame_current', 'frame_start', 'frame_end', 'use_gravity']
+            basic_props = ['frame_current', 'frame_start', 'frame_end', 'frame_step', 'use_gravity']
             for prop in basic_props:
                 if prop in initial_scene:
                     current_val = getattr(scene, prop)
@@ -704,59 +1138,76 @@ class ANIM_OT_path_eyedropper(bpy.types.Operator):
                         if not self.values_equal(current, initial):
                             return f'bpy.data.scenes["{scene.name}"].gravity[{i}]'
             
+            # Render properties
+            if 'render' in initial_scene and hasattr(scene, 'render'):
+                for prop, initial_val in initial_scene['render'].items():
+                    current_val = self.safe_get_attr(scene.render, prop)
+                    if current_val is not None and not self.values_equal(current_val, initial_val):
+                        return f'bpy.data.scenes["{scene.name}"].render.{prop}'
+            
             # EEVEE properties
             if 'eevee' in initial_scene and hasattr(scene, 'eevee'):
                 for prop, initial_val in initial_scene['eevee'].items():
-                    if hasattr(scene.eevee, prop):
-                        current_val = getattr(scene.eevee, prop)
-                        if not self.values_equal(current_val, initial_val):
-                            return f'bpy.data.scenes["{scene.name}"].eevee.{prop}'
+                    current_val = self.safe_get_attr(scene.eevee, prop)
+                    if current_val is not None and not self.values_equal(current_val, initial_val):
+                        return f'bpy.data.scenes["{scene.name}"].eevee.{prop}'
             
             # Cycles properties
             if 'cycles' in initial_scene and hasattr(scene, 'cycles'):
                 for prop, initial_val in initial_scene['cycles'].items():
-                    if hasattr(scene.cycles, prop):
-                        current_val = getattr(scene.cycles, prop)
-                        if not self.values_equal(current_val, initial_val):
-                            return f'bpy.data.scenes["{scene.name}"].cycles.{prop}'
-        
-        # Check materials
-        for mat in bpy.data.materials:
-            mat_key = f"materials.{mat.name}"
-            if mat_key not in self._initial_state or not (mat.use_nodes and mat.node_tree):
-                continue
-                
-            initial_mat = self._initial_state[mat_key]
+                    current_val = self.safe_get_attr(scene.cycles, prop)
+                    if current_val is not None and not self.values_equal(current_val, initial_val):
+                        return f'bpy.data.scenes["{scene.name}"].cycles.{prop}'
             
-            if 'nodes' in initial_mat:
-                for node in mat.node_tree.nodes:
-                    if node.name in initial_mat['nodes']:
-                        initial_node = initial_mat['nodes'][node.name]
-                        
-                        # Check node mute
-                        if 'mute' in initial_node and hasattr(node, 'mute'):
-                            if node.mute != initial_node['mute']:
-                                return f'bpy.data.materials["{mat.name}"].node_tree.nodes["{node.name}"].mute'
-                        
-                        # Check input values
-                        if 'inputs' in initial_node and hasattr(node, 'inputs'):
-                            for i, input_socket in enumerate(node.inputs):
-                                if i in initial_node['inputs'] and hasattr(input_socket, 'default_value'):
-                                    try:
-                                        current_val = input_socket.default_value
-                                        initial_val = initial_node['inputs'][i]
-                                        
-                                        if not self.values_equal(current_val, initial_val):
-                                            return f'bpy.data.materials["{mat.name}"].node_tree.nodes["{node.name}"].inputs[{i}].default_value'
-                                    except:
-                                        pass
+            # World properties
+            if 'world' in initial_scene and scene.world:
+                world_props = ['use_nodes', 'color']
+                for prop in world_props:
+                    if prop in initial_scene['world']:
+                        current_val = getattr(scene.world, prop)
+                        if not self.values_equal(current_val, initial_scene['world'][prop]):
+                            # Check for array index (like color)
+                            if hasattr(current_val, '__len__') and not isinstance(current_val, str):
+                                for i, (curr, init) in enumerate(zip(current_val, initial_scene['world'][prop])):
+                                    if not self.values_equal(curr, init):
+                                        return f'bpy.data.worlds["{scene.world.name}"].{prop}[{i}]'
+                            return f'bpy.data.worlds["{scene.world.name}"].{prop}'
+                
+                # World node tree
+                if 'nodes' in initial_scene['world'] and scene.world.use_nodes and scene.world.node_tree:
+                    for node in scene.world.node_tree.nodes:
+                        if node.name in initial_scene['world']['nodes']:
+                            initial_node = initial_scene['world']['nodes'][node.name]
+                            
+                            # Input values
+                            if 'inputs' in initial_node and hasattr(node, 'inputs'):
+                                for i, input_socket in enumerate(node.inputs):
+                                    if i in initial_node['inputs'] and hasattr(input_socket, 'default_value'):
+                                        try:
+                                            current_val = input_socket.default_value
+                                            initial_val = initial_node['inputs'][i]
+                                            
+                                            if not self.values_equal(current_val, initial_val):
+                                                # Check for array index
+                                                if hasattr(current_val, '__len__') and not isinstance(current_val, str):
+                                                    for j, (curr, init) in enumerate(zip(current_val, initial_val)):
+                                                        if not self.values_equal(curr, init):
+                                                            return f'bpy.data.worlds["{scene.world.name}"].node_tree.nodes["{node.name}"].inputs[{i}].default_value[{j}]'
+                                                return f'bpy.data.worlds["{scene.world.name}"].node_tree.nodes["{node.name}"].inputs[{i}].default_value'
+                                        except:
+                                            pass
         
         return None
+
 
 
 #---------------------------------------
 # Constraint Operators
 #---------------------------------------
+
+import bpy
+import math
+
 class OBJECT_OT_limit_source_transforms(bpy.types.Operator):
     """Add limit constraints to source bone/object based on recorded min/max values"""
     bl_idname = "object.limit_source_transforms"
@@ -825,9 +1276,7 @@ class OBJECT_OT_limit_source_transforms(bpy.types.Operator):
         elif axis_info['transform'] == 'ROT':
             return self.add_rotation_limit(pose_bone, axis_info, props.from_min_rotation, props.from_max_rotation, constraint_name)
         elif axis_info['transform'] == 'SCALE':
-            self.report({'WARNING'}, "Scale limiting not yet implemented")
-            return False
-        
+            return self.add_scale_limit(pose_bone, axis_info, props.from_min_scale, props.from_max_scale, constraint_name)
         return False
 
     def limit_object_transforms(self, props, context):
@@ -860,8 +1309,7 @@ class OBJECT_OT_limit_source_transforms(bpy.types.Operator):
         elif axis_info['transform'] == 'ROT':
             return self.add_object_rotation_limit(obj, axis_info, props.from_object_min_rotation, props.from_object_max_rotation, constraint_name)
         elif axis_info['transform'] == 'SCALE':
-            self.report({'WARNING'}, "Scale limiting not yet implemented for objects")
-            return False
+            return self.add_object_scale_limit(obj, axis_info, props.from_object_min_scale, props.from_object_max_scale, constraint_name)
         
         return False
 
@@ -927,6 +1375,8 @@ class OBJECT_OT_limit_source_transforms(bpy.types.Operator):
             constraint.max_z = actual_max
         
         constraint.owner_space = 'LOCAL'
+        # Enable "Affect Transform" for location constraints
+        constraint.use_transform_limit = True
         
         # Debug info
         print(f"Added location limit to {pose_bone.name} {axis_info['axis']}: {actual_min:.3f} to {actual_max:.3f}")
@@ -938,7 +1388,7 @@ class OBJECT_OT_limit_source_transforms(bpy.types.Operator):
         if constraint_name in pose_bone.constraints:
             pose_bone.constraints.remove(pose_bone.constraints[constraint_name])
         
-        # Use Euler angles for constraint computation only; avoid permanently changing mode
+        # Ensure bone is in Euler mode for proper constraint application
         original_mode = pose_bone.rotation_mode
         if original_mode == 'QUATERNION':
             temp_euler = pose_bone.rotation_quaternion.to_euler('XYZ')
@@ -951,32 +1401,31 @@ class OBJECT_OT_limit_source_transforms(bpy.types.Operator):
         
         axis_idx = axis_info['index']
         
-        # Get properly sorted min/max values (in radians)
+        # Get properly sorted min/max values (already in radians from recording)
         actual_min_rad, actual_max_rad = self.get_sorted_values(min_rot[axis_idx], max_rot[axis_idx])
         
-        # Convert radians to degrees for the constraint
-        actual_min_deg = math.degrees(actual_min_rad)
-        actual_max_deg = math.degrees(actual_max_rad)
-        
-        # Set limits for the specific axis
+        # Set limits for the specific axis - Blender limit rotation constraints use RADIANS
         if axis_info['axis'] == 'X':
             constraint.use_limit_x = True
-            constraint.min_x = math.radians(actual_min_deg)
-            constraint.max_x = math.radians(actual_max_deg)
+            constraint.min_x = actual_min_rad
+            constraint.max_x = actual_max_rad
         elif axis_info['axis'] == 'Y':
             constraint.use_limit_y = True
-            constraint.min_y = math.radians(actual_min_deg)
-            constraint.max_y = math.radians(actual_max_deg)
+            constraint.min_y = actual_min_rad
+            constraint.max_y = actual_max_rad
         elif axis_info['axis'] == 'Z':
             constraint.use_limit_z = True
-            constraint.min_z = math.radians(actual_min_deg)
-            constraint.max_z = math.radians(actual_max_deg)
+            constraint.min_z = actual_min_rad
+            constraint.max_z = actual_max_rad
         
         # Set constraint properties for proper rotation handling
         constraint.owner_space = 'LOCAL'
+        # Enable "Affect Transform" for rotation constraints
         constraint.use_transform_limit = True
         
-        # Debug info
+        # Debug info - convert to degrees just for display
+        actual_min_deg = math.degrees(actual_min_rad)
+        actual_max_deg = math.degrees(actual_max_rad)
         print(f"Added rotation limit to {pose_bone.name} {axis_info['axis']}: {actual_min_deg:.1f}° to {actual_max_deg:.1f}°")
         return True
 
@@ -1014,6 +1463,9 @@ class OBJECT_OT_limit_source_transforms(bpy.types.Operator):
             constraint.min_z = actual_min
             constraint.max_z = actual_max
         
+        # Enable "Affect Transform" for object location constraints
+        constraint.use_transform_limit = True
+        
         # Debug info
         print(f"Added location limit to {obj.name} {axis_info['axis']}: {actual_min:.3f} to {actual_max:.3f}")
         return True
@@ -1035,12 +1487,8 @@ class OBJECT_OT_limit_source_transforms(bpy.types.Operator):
         
         axis_idx = axis_info['index']
         
-        # Get properly sorted min/max values (in radians)
+        # Get properly sorted min/max values (already in radians from recording)
         actual_min_rad, actual_max_rad = self.get_sorted_values(min_rot[axis_idx], max_rot[axis_idx])
-        
-        # Convert radians to degrees for the constraint
-        actual_min_deg = math.degrees(actual_min_rad)
-        actual_max_deg = math.degrees(actual_max_rad)
         
         # Set limits for the specific axis - Blender rotation constraints use RADIANS
         if axis_info['axis'] == 'X':
@@ -1057,11 +1505,96 @@ class OBJECT_OT_limit_source_transforms(bpy.types.Operator):
             constraint.max_z = actual_max_rad
         
         # Set constraint properties for proper rotation handling
+        # Enable "Affect Transform" for object rotation constraints
+        constraint.use_transform_limit = True
+        
+        # Debug info - convert to degrees just for display
+        actual_min_deg = math.degrees(actual_min_rad)
+        actual_max_deg = math.degrees(actual_max_rad)
+        print(f"Added rotation limit to {obj.name} {axis_info['axis']}: {actual_min_deg:.1f}° to {actual_max_deg:.1f}°")
+        return True
+    
+    def add_scale_limit(self, pose_bone, axis_info, min_scale, max_scale, constraint_name):
+        """Add scale limit constraint to pose bone"""
+        # Remove existing constraint with same name
+        if constraint_name in pose_bone.constraints:
+            pose_bone.constraints.remove(pose_bone.constraints[constraint_name])
+        
+        # Add limit scale constraint
+        constraint = pose_bone.constraints.new('LIMIT_SCALE')
+        constraint.name = constraint_name
+        
+        axis_idx = axis_info['index']
+        
+        # Get properly sorted min/max values
+        actual_min, actual_max = self.get_sorted_values(min_scale[axis_idx], max_scale[axis_idx])
+        
+        # Set limits for the specific axis
+        if axis_info['axis'] == 'X':
+            constraint.use_min_x = True
+            constraint.use_max_x = True
+            constraint.min_x = actual_min
+            constraint.max_x = actual_max
+        elif axis_info['axis'] == 'Y':
+            constraint.use_min_y = True
+            constraint.use_max_y = True
+            constraint.min_y = actual_min
+            constraint.max_y = actual_max
+        elif axis_info['axis'] == 'Z':
+            constraint.use_min_z = True
+            constraint.use_max_z = True
+            constraint.min_z = actual_min
+            constraint.max_z = actual_max
+        
+        constraint.owner_space = 'LOCAL'
+        # Enable "Affect Transform" for scale constraints
         constraint.use_transform_limit = True
         
         # Debug info
-        print(f"Added rotation limit to {obj.name} {axis_info['axis']}: {actual_min_deg:.1f}° to {actual_max_deg:.1f}°")
+        print(f"Added scale limit to {pose_bone.name} {axis_info['axis']}: {actual_min:.3f} to {actual_max:.3f}")
         return True
+
+    def add_object_scale_limit(self, obj, axis_info, min_scale, max_scale, constraint_name):
+        """Add scale limit constraint to object"""
+        # Remove existing constraint with same name
+        for constraint in obj.constraints:
+            if constraint.name == constraint_name:
+                obj.constraints.remove(constraint)
+                break
+        
+        # Add limit scale constraint
+        constraint = obj.constraints.new('LIMIT_SCALE')
+        constraint.name = constraint_name
+        
+        axis_idx = axis_info['index']
+        
+        # Get properly sorted min/max values
+        actual_min, actual_max = self.get_sorted_values(min_scale[axis_idx], max_scale[axis_idx])
+        
+        # Set limits for the specific axis
+        if axis_info['axis'] == 'X':
+            constraint.use_min_x = True
+            constraint.use_max_x = True
+            constraint.min_x = actual_min
+            constraint.max_x = actual_max
+        elif axis_info['axis'] == 'Y':
+            constraint.use_min_y = True
+            constraint.use_max_y = True
+            constraint.min_y = actual_min
+            constraint.max_y = actual_max
+        elif axis_info['axis'] == 'Z':
+            constraint.use_min_z = True
+            constraint.use_max_z = True
+            constraint.min_z = actual_min
+            constraint.max_z = actual_max
+        
+        # Enable "Affect Transform" for object scale constraints
+        constraint.use_transform_limit = True
+        
+        # Debug info
+        print(f"Added scale limit to {obj.name} {axis_info['axis']}: {actual_min:.3f} to {actual_max:.3f}")
+        return True
+
 
 class OBJECT_OT_one_axis_source_limit(bpy.types.Operator):
     """Lock source to move/rotate only on the detected axis, preventing movement on other axes"""
@@ -1127,8 +1660,7 @@ class OBJECT_OT_one_axis_source_limit(bpy.types.Operator):
         elif axis_info['transform'] == 'ROT':
             return self.add_bone_rotation_lock(pose_bone, axis_info, props.from_min_rotation, props.from_max_rotation)
         elif axis_info['transform'] == 'SCALE':
-            self.report({'WARNING'}, "Scale locking not yet implemented")
-            return False
+            return self.add_bone_scale_lock(pose_bone, axis_info, props.from_min_scale, props.from_max_scale)
         
         return False
 
@@ -1158,8 +1690,7 @@ class OBJECT_OT_one_axis_source_limit(bpy.types.Operator):
         elif axis_info['transform'] == 'ROT':
             return self.add_object_rotation_lock(obj, axis_info, props.from_object_min_rotation, props.from_object_max_rotation)
         elif axis_info['transform'] == 'SCALE':
-            self.report({'WARNING'}, "Scale locking not yet implemented for objects")
-            return False
+            return self.add_object_scale_lock(obj, axis_info, props.from_object_min_scale, props.from_object_max_scale)
         
         return False
 
@@ -1199,52 +1730,64 @@ class OBJECT_OT_one_axis_source_limit(bpy.types.Operator):
         if constraint_name in pose_bone.constraints:
             pose_bone.constraints.remove(pose_bone.constraints[constraint_name])
         
-        # Add limit location constraint that locks OTHER axes
+        # Add limit location constraint
         constraint = pose_bone.constraints.new('LIMIT_LOCATION')
         constraint.name = constraint_name
         constraint.owner_space = 'LOCAL'
+        # Enable "Affect Transform" for bone location constraints
+        constraint.use_transform_limit = True
         
-        # Get current position to use as lock point for other axes
+        # Get current position to use as exact lock point for other axes
         current_loc = pose_bone.location.copy()
         
         # Get sorted min/max for the active axis
         axis_idx = axis_info['index']
         actual_min, actual_max = self.get_sorted_values(min_loc[axis_idx], max_loc[axis_idx])
         
-        # Lock all axes except the detected one
-        if axis_info['axis'] != 'X':
-            # Lock X axis to current position
-            constraint.use_min_x = True
-            constraint.use_max_x = True
-            constraint.min_x = current_loc[0]
-            constraint.max_x = current_loc[0]
-        else:
+        # Apply exact constraints - lock all axes except the detected one
+        if axis_info['axis'] == 'X':
             # Allow X axis movement within recorded range
             constraint.use_min_x = True
             constraint.use_max_x = True
             constraint.min_x = actual_min
             constraint.max_x = actual_max
-        
-        if axis_info['axis'] != 'Y':
-            # Lock Y axis to current position
+            # Lock Y axis to exact current value
             constraint.use_min_y = True
             constraint.use_max_y = True
             constraint.min_y = current_loc[1]
             constraint.max_y = current_loc[1]
-        else:
+            # Lock Z axis to exact current value
+            constraint.use_min_z = True
+            constraint.use_max_z = True
+            constraint.min_z = current_loc[2]
+            constraint.max_z = current_loc[2]
+        elif axis_info['axis'] == 'Y':
+            # Lock X axis to exact current value
+            constraint.use_min_x = True
+            constraint.use_max_x = True
+            constraint.min_x = current_loc[0]
+            constraint.max_x = current_loc[0]
             # Allow Y axis movement within recorded range
             constraint.use_min_y = True
             constraint.use_max_y = True
             constraint.min_y = actual_min
             constraint.max_y = actual_max
-        
-        if axis_info['axis'] != 'Z':
-            # Lock Z axis to current position
+            # Lock Z axis to exact current value
             constraint.use_min_z = True
             constraint.use_max_z = True
             constraint.min_z = current_loc[2]
             constraint.max_z = current_loc[2]
-        else:
+        elif axis_info['axis'] == 'Z':
+            # Lock X axis to exact current value
+            constraint.use_min_x = True
+            constraint.use_max_x = True
+            constraint.min_x = current_loc[0]
+            constraint.max_x = current_loc[0]
+            # Lock Y axis to exact current value
+            constraint.use_min_y = True
+            constraint.use_max_y = True
+            constraint.min_y = current_loc[1]
+            constraint.max_y = current_loc[1]
             # Allow Z axis movement within recorded range
             constraint.use_min_z = True
             constraint.use_max_z = True
@@ -1262,51 +1805,63 @@ class OBJECT_OT_one_axis_source_limit(bpy.types.Operator):
         if constraint_name in pose_bone.constraints:
             pose_bone.constraints.remove(pose_bone.constraints[constraint_name])
         
-        # Force bone to use Euler rotation mode
-        pose_bone.rotation_mode = 'XYZ'
+        # Ensure bone is in Euler mode for proper constraint application
+        original_mode = pose_bone.rotation_mode
+        if original_mode == 'QUATERNION':
+            temp_euler = pose_bone.rotation_quaternion.to_euler('XYZ')
+            pose_bone.rotation_mode = 'XYZ'
+            pose_bone.rotation_euler = temp_euler
         
-        # Add limit rotation constraint that locks OTHER axes
+        # Add limit rotation constraint
         constraint = pose_bone.constraints.new('LIMIT_ROTATION')
         constraint.name = constraint_name
         constraint.owner_space = 'LOCAL'
+        # Enable "Affect Transform" for bone rotation constraints
         constraint.use_transform_limit = True
         
-        # Get current rotation to use as lock point for other axes
+        # Get current rotation to use as exact lock point for other axes
         current_rot = pose_bone.rotation_euler.copy()
         
         # Get sorted min/max for the active axis (in radians)
         axis_idx = axis_info['index']
         actual_min_rad, actual_max_rad = self.get_sorted_values(min_rot[axis_idx], max_rot[axis_idx])
         
-        # Lock all axes except the detected one
-        if axis_info['axis'] != 'X':
-            # Lock X rotation to current position
-            constraint.use_limit_x = True
-            constraint.min_x = current_rot[0]
-            constraint.max_x = current_rot[0]
-        else:
+        # Apply exact constraints - lock all axes except the detected one
+        if axis_info['axis'] == 'X':
             # Allow X rotation within recorded range
             constraint.use_limit_x = True
             constraint.min_x = actual_min_rad
             constraint.max_x = actual_max_rad
-        
-        if axis_info['axis'] != 'Y':
-            # Lock Y rotation to current position
+            # Lock Y rotation to exact current value
             constraint.use_limit_y = True
             constraint.min_y = current_rot[1]
             constraint.max_y = current_rot[1]
-        else:
+            # Lock Z rotation to exact current value
+            constraint.use_limit_z = True
+            constraint.min_z = current_rot[2]
+            constraint.max_z = current_rot[2]
+        elif axis_info['axis'] == 'Y':
+            # Lock X rotation to exact current value
+            constraint.use_limit_x = True
+            constraint.min_x = current_rot[0]
+            constraint.max_x = current_rot[0]
             # Allow Y rotation within recorded range
             constraint.use_limit_y = True
             constraint.min_y = actual_min_rad
             constraint.max_y = actual_max_rad
-        
-        if axis_info['axis'] != 'Z':
-            # Lock Z rotation to current position
+            # Lock Z rotation to exact current value
             constraint.use_limit_z = True
             constraint.min_z = current_rot[2]
             constraint.max_z = current_rot[2]
-        else:
+        elif axis_info['axis'] == 'Z':
+            # Lock X rotation to exact current value
+            constraint.use_limit_x = True
+            constraint.min_x = current_rot[0]
+            constraint.max_x = current_rot[0]
+            # Lock Y rotation to exact current value
+            constraint.use_limit_y = True
+            constraint.min_y = current_rot[1]
+            constraint.max_y = current_rot[1]
             # Allow Z rotation within recorded range
             constraint.use_limit_z = True
             constraint.min_z = actual_min_rad
@@ -1330,43 +1885,62 @@ class OBJECT_OT_one_axis_source_limit(bpy.types.Operator):
         # Add limit location constraint
         constraint = obj.constraints.new('LIMIT_LOCATION')
         constraint.name = constraint_name
+        # Enable "Affect Transform" for object location constraints
+        constraint.use_transform_limit = True
         
-        # Get current position
+        # Get current position to use as exact lock point for other axes
         current_loc = obj.location.copy()
         
         # Get sorted min/max for the active axis
         axis_idx = axis_info['index']
         actual_min, actual_max = self.get_sorted_values(min_loc[axis_idx], max_loc[axis_idx])
         
-        # Lock all axes except the detected one
-        if axis_info['axis'] != 'X':
-            constraint.use_min_x = True
-            constraint.use_max_x = True
-            constraint.min_x = current_loc[0]
-            constraint.max_x = current_loc[0]
-        else:
+        # Apply exact constraints - lock all axes except the detected one
+        # Apply exact constraints - lock all axes except the detected one
+        if axis_info['axis'] == 'X':
+            # Allow X movement within recorded range
             constraint.use_min_x = True
             constraint.use_max_x = True
             constraint.min_x = actual_min
             constraint.max_x = actual_max
-        
-        if axis_info['axis'] != 'Y':
+            # Lock Y axis to exact current value
             constraint.use_min_y = True
             constraint.use_max_y = True
             constraint.min_y = current_loc[1]
             constraint.max_y = current_loc[1]
-        else:
-            constraint.use_min_y = True
-            constraint.use_max_y = True
-            constraint.min_y = actual_min
-            constraint.max_y = actual_max
-        
-        if axis_info['axis'] != 'Z':
+            # Lock Z axis to exact current value
             constraint.use_min_z = True
             constraint.use_max_z = True
             constraint.min_z = current_loc[2]
             constraint.max_z = current_loc[2]
-        else:
+        elif axis_info['axis'] == 'Y':
+            # Lock X axis to exact current value
+            constraint.use_min_x = True
+            constraint.use_max_x = True
+            constraint.min_x = current_loc[0]
+            constraint.max_x = current_loc[0]
+            # Allow Y movement within recorded range
+            constraint.use_min_y = True
+            constraint.use_max_y = True
+            constraint.min_y = actual_min
+            constraint.max_y = actual_max
+            # Lock Z axis to exact current value
+            constraint.use_min_z = True
+            constraint.use_max_z = True
+            constraint.min_z = current_loc[2]
+            constraint.max_z = current_loc[2]
+        elif axis_info['axis'] == 'Z':
+            # Lock X axis to exact current value
+            constraint.use_min_x = True
+            constraint.use_max_x = True
+            constraint.min_x = current_loc[0]
+            constraint.max_x = current_loc[0]
+            # Lock Y axis to exact current value
+            constraint.use_min_y = True
+            constraint.use_max_y = True
+            constraint.min_y = current_loc[1]
+            constraint.max_y = current_loc[1]
+            # Allow Z movement within recorded range
             constraint.use_min_z = True
             constraint.use_max_z = True
             constraint.min_z = actual_min
@@ -1391,39 +1965,53 @@ class OBJECT_OT_one_axis_source_limit(bpy.types.Operator):
         # Add limit rotation constraint
         constraint = obj.constraints.new('LIMIT_ROTATION')
         constraint.name = constraint_name
+        # Enable "Affect Transform" for object rotation constraints
         constraint.use_transform_limit = True
         
-        # Get current rotation
+        # Get current rotation to use as exact lock point for other axes
         current_rot = obj.rotation_euler.copy()
         
         # Get sorted min/max for the active axis (in radians)
         axis_idx = axis_info['index']
         actual_min_rad, actual_max_rad = self.get_sorted_values(min_rot[axis_idx], max_rot[axis_idx])
         
-        # Lock all axes except the detected one
-        if axis_info['axis'] != 'X':
-            constraint.use_limit_x = True
-            constraint.min_x = current_rot[0]
-            constraint.max_x = current_rot[0]
-        else:
+        # Apply exact constraints - lock all axes except the detected one
+        if axis_info['axis'] == 'X':
+            # Allow X rotation within recorded range
             constraint.use_limit_x = True
             constraint.min_x = actual_min_rad
             constraint.max_x = actual_max_rad
-        
-        if axis_info['axis'] != 'Y':
+            # Lock Y rotation to exact current value
             constraint.use_limit_y = True
             constraint.min_y = current_rot[1]
             constraint.max_y = current_rot[1]
-        else:
-            constraint.use_limit_y = True
-            constraint.min_y = actual_min_rad
-            constraint.max_y = actual_max_rad
-        
-        if axis_info['axis'] != 'Z':
+            # Lock Z rotation to exact current value
             constraint.use_limit_z = True
             constraint.min_z = current_rot[2]
             constraint.max_z = current_rot[2]
-        else:
+        elif axis_info['axis'] == 'Y':
+            # Lock X rotation to exact current value
+            constraint.use_limit_x = True
+            constraint.min_x = current_rot[0]
+            constraint.max_x = current_rot[0]
+            # Allow Y rotation within recorded range
+            constraint.use_limit_y = True
+            constraint.min_y = actual_min_rad
+            constraint.max_y = actual_max_rad
+            # Lock Z rotation to exact current value
+            constraint.use_limit_z = True
+            constraint.min_z = current_rot[2]
+            constraint.max_z = current_rot[2]
+        elif axis_info['axis'] == 'Z':
+            # Lock X rotation to exact current value
+            constraint.use_limit_x = True
+            constraint.min_x = current_rot[0]
+            constraint.max_x = current_rot[0]
+            # Lock Y rotation to exact current value
+            constraint.use_limit_y = True
+            constraint.min_y = current_rot[1]
+            constraint.max_y = current_rot[1]
+            # Allow Z rotation within recorded range
             constraint.use_limit_z = True
             constraint.min_z = actual_min_rad
             constraint.max_z = actual_max_rad
@@ -1432,6 +2020,160 @@ class OBJECT_OT_one_axis_source_limit(bpy.types.Operator):
         actual_max_deg = math.degrees(actual_max_rad)
         print(f"Locked {obj.name} to {axis_info['axis']} rotation only (range: {actual_min_deg:.1f}° to {actual_max_deg:.1f}°)")
         return True
+
+    def add_bone_scale_lock(self, pose_bone, axis_info, min_scale, max_scale):
+        """Lock bone scale to only the detected axis"""
+        constraint_name = f"OneAxis_SCALE_{axis_info['axis']}"
+        
+        # Remove existing constraint
+        if constraint_name in pose_bone.constraints:
+            pose_bone.constraints.remove(pose_bone.constraints[constraint_name])
+        
+        # Add limit scale constraint
+        constraint = pose_bone.constraints.new('LIMIT_SCALE')
+        constraint.name = constraint_name
+        constraint.owner_space = 'LOCAL'
+        # Enable "Affect Transform" for bone scale constraints
+        constraint.use_transform_limit = True
+        
+        # Get current scale to use as exact lock point for other axes
+        current_scale = pose_bone.scale.copy()
+        
+        # Get sorted min/max for the active axis
+        axis_idx = axis_info['index']
+        actual_min, actual_max = self.get_sorted_values(min_scale[axis_idx], max_scale[axis_idx])
+        
+        # Apply exact constraints - lock all axes except the detected one
+        if axis_info['axis'] == 'X':
+            # Allow X scale within recorded range
+            constraint.use_min_x = True
+            constraint.use_max_x = True
+            constraint.min_x = actual_min
+            constraint.max_x = actual_max
+            # Lock Y scale to exact current value
+            constraint.use_min_y = True
+            constraint.use_max_y = True
+            constraint.min_y = current_scale[1]
+            constraint.max_y = current_scale[1]
+            # Lock Z scale to exact current value
+            constraint.use_min_z = True
+            constraint.use_max_z = True
+            constraint.min_z = current_scale[2]
+            constraint.max_z = current_scale[2]
+        elif axis_info['axis'] == 'Y':
+            # Lock X scale to exact current value
+            constraint.use_min_x = True
+            constraint.use_max_x = True
+            constraint.min_x = current_scale[0]
+            constraint.max_x = current_scale[0]
+            # Allow Y scale within recorded range
+            constraint.use_min_y = True
+            constraint.use_max_y = True
+            constraint.min_y = actual_min
+            constraint.max_y = actual_max
+            # Lock Z scale to exact current value
+            constraint.use_min_z = True
+            constraint.use_max_z = True
+            constraint.min_z = current_scale[2]
+            constraint.max_z = current_scale[2]
+        elif axis_info['axis'] == 'Z':
+            # Lock X scale to exact current value
+            constraint.use_min_x = True
+            constraint.use_max_x = True
+            constraint.min_x = current_scale[0]
+            constraint.max_x = current_scale[0]
+            # Lock Y scale to exact current value
+            constraint.use_min_y = True
+            constraint.use_max_y = True
+            constraint.min_y = current_scale[1]
+            constraint.max_y = current_scale[1]
+            # Allow Z scale within recorded range
+            constraint.use_min_z = True
+            constraint.use_max_z = True
+            constraint.min_z = actual_min
+            constraint.max_z = actual_max
+        
+        print(f"Locked {pose_bone.name} to {axis_info['axis']} scale only (range: {actual_min:.3f} to {actual_max:.3f})")
+        return True
+
+    def add_object_scale_lock(self, obj, axis_info, min_scale, max_scale):
+        """Lock object scale to only the detected axis"""
+        constraint_name = f"OneAxis_SCALE_{axis_info['axis']}"
+        
+        # Remove existing constraint
+        for constraint in obj.constraints:
+            if constraint.name == constraint_name:
+                obj.constraints.remove(constraint)
+                break
+        
+        # Add limit scale constraint
+        constraint = obj.constraints.new('LIMIT_SCALE')
+        constraint.name = constraint_name
+        # Enable "Affect Transform" for object scale constraints
+        constraint.use_transform_limit = True
+        
+        # Get current scale to use as exact lock point for other axes
+        current_scale = obj.scale.copy()
+        
+        # Get sorted min/max for the active axis
+        axis_idx = axis_info['index']
+        actual_min, actual_max = self.get_sorted_values(min_scale[axis_idx], max_scale[axis_idx])
+        
+        # Apply exact constraints - lock all axes except the detected one
+        if axis_info['axis'] == 'X':
+            # Allow X scale within recorded range
+            constraint.use_min_x = True
+            constraint.use_max_x = True
+            constraint.min_x = actual_min
+            constraint.max_x = actual_max
+            # Lock Y scale to exact current value
+            constraint.use_min_y = True
+            constraint.use_max_y = True
+            constraint.min_y = current_scale[1]
+            constraint.max_y = current_scale[1]
+            # Lock Z scale to exact current value
+            constraint.use_min_z = True
+            constraint.use_max_z = True
+            constraint.min_z = current_scale[2]
+            constraint.max_z = current_scale[2]
+        elif axis_info['axis'] == 'Y':
+            # Lock X scale to exact current value
+            constraint.use_min_x = True
+            constraint.use_max_x = True
+            constraint.min_x = current_scale[0]
+            constraint.max_x = current_scale[0]
+            # Allow Y scale within recorded range
+            constraint.use_min_y = True
+            constraint.use_max_y = True
+            constraint.min_y = actual_min
+            constraint.max_y = actual_max
+            # Lock Z scale to exact current value
+            constraint.use_min_z = True
+            constraint.use_max_z = True
+            constraint.min_z = current_scale[2]
+            constraint.max_z = current_scale[2]
+        elif axis_info['axis'] == 'Z':
+            # Lock X scale to exact current value
+            constraint.use_min_x = True
+            constraint.use_max_x = True
+            constraint.min_x = current_scale[0]
+            constraint.max_x = current_scale[0]
+            # Lock Y scale to exact current value
+            constraint.use_min_y = True
+            constraint.use_max_y = True
+            constraint.min_y = current_scale[1]
+            constraint.max_y = current_scale[1]
+            # Allow Z scale within recorded range
+            constraint.use_min_z = True
+            constraint.use_max_z = True
+            constraint.min_z = actual_min
+            constraint.max_z = actual_max
+        
+        print(f"Locked {obj.name} to {axis_info['axis']} scale only (range: {actual_min:.3f} to {actual_max:.3f})")
+        return True
+
+
+
 
 #---------------------------------------
 # Fine Tuning Operators
@@ -1447,24 +2189,34 @@ class ANIM_OT_toggle_fine_tune(bpy.types.Operator):
         # Toggle fine tune mode
         context.scene.source_fine_tune_mode = not context.scene.source_fine_tune_mode
         
-        # If we're turning it on, initialize fine tune values based on recorded data
+        # If we're turning it on, initialize fine tune values and manual selection
         if context.scene.source_fine_tune_mode:
             if props.from_bone:
-                self.init_bone_fine_tune(props)
+                self.init_bone_fine_tune(props, context)
             elif props.from_object:
-                self.init_object_fine_tune(props)
-        
+                self.init_object_fine_tune(props, context)
+
         return {'FINISHED'}
-    
-    def init_bone_fine_tune(self, props):
+
+    def init_bone_fine_tune(self, props, context):
         """Initialize fine tune values for bone."""
+        # Initialize manual selection fields
+        if props.from_armature:
+            armature = bpy.data.objects.get(props.from_armature)
+            props.manual_source_armature = armature
+            props.manual_source_bone = props.from_bone
+        
+        # Clear object selection
+        props.manual_source_object = None
+        
         # Get current axis and values
         detected_axis = props.from_detected_axis
         
         # Set axis dropdown
         axis_map = {
             "LOC X": "LOC_X", "LOC Y": "LOC_Y", "LOC Z": "LOC_Z",
-            "ROT X": "ROT_X", "ROT Y": "ROT_Y", "ROT Z": "ROT_Z"
+            "ROT X": "ROT_X", "ROT Y": "ROT_Y", "ROT Z": "ROT_Z",
+            "SCALE X": "SCALE_X", "SCALE Y": "SCALE_Y", "SCALE Z": "SCALE_Z"
         }
         props.fine_tune_axis = axis_map.get(detected_axis, "LOC_X")
         
@@ -1477,16 +2229,30 @@ class ANIM_OT_toggle_fine_tune(bpy.types.Operator):
             axis_idx = ["X", "Y", "Z"].index(detected_axis.split()[-1])
             props.fine_tune_min_value = props.from_min_rotation[axis_idx]
             props.fine_tune_max_value = props.from_max_rotation[axis_idx]
-    
-    def init_object_fine_tune(self, props):
+        elif "SCALE" in detected_axis:
+            axis_idx = ["X", "Y", "Z"].index(detected_axis.split()[-1])
+            props.fine_tune_min_value = props.from_min_scale[axis_idx]
+            props.fine_tune_max_value = props.from_max_scale[axis_idx]
+
+    def init_object_fine_tune(self, props, context):
         """Initialize fine tune values for object."""
+        # Initialize manual selection fields
+        if props.from_object:
+            obj = bpy.data.objects.get(props.from_object)
+            props.manual_source_object = obj
+        
+        # Clear bone selection
+        props.manual_source_armature = None
+        props.manual_source_bone = ""
+        
         # Get current axis and values
         detected_axis = props.from_object_detected_axis
         
         # Set axis dropdown
         axis_map = {
             "LOC X": "LOC_X", "LOC Y": "LOC_Y", "LOC Z": "LOC_Z",
-            "ROT X": "ROT_X", "ROT Y": "ROT_Y", "ROT Z": "ROT_Z"
+            "ROT X": "ROT_X", "ROT Y": "ROT_Y", "ROT Z": "ROT_Z",
+            "SCALE X": "SCALE_X", "SCALE Y": "SCALE_Y", "SCALE Z": "SCALE_Z"
         }
         props.fine_tune_object_axis = axis_map.get(detected_axis, "LOC_X")
         
@@ -1499,6 +2265,35 @@ class ANIM_OT_toggle_fine_tune(bpy.types.Operator):
             axis_idx = ["X", "Y", "Z"].index(detected_axis.split()[-1])
             props.fine_tune_object_min_value = props.from_object_min_rotation[axis_idx]
             props.fine_tune_object_max_value = props.from_object_max_rotation[axis_idx]
+        elif "SCALE" in detected_axis:
+            axis_idx = ["X", "Y", "Z"].index(detected_axis.split()[-1])
+            props.fine_tune_object_min_value = props.from_object_min_scale[axis_idx]
+            props.fine_tune_object_max_value = props.from_object_max_scale[axis_idx]
+            """Initialize fine tune values for object."""
+            # Get current axis and values
+            detected_axis = props.from_object_detected_axis
+            
+            # Set axis dropdown
+            axis_map = {
+                "LOC X": "LOC_X", "LOC Y": "LOC_Y", "LOC Z": "LOC_Z",
+                "ROT X": "ROT_X", "ROT Y": "ROT_Y", "ROT Z": "ROT_Z",
+                "SCALE X": "SCALE_X", "SCALE Y": "SCALE_Y", "SCALE Z": "SCALE_Z"
+            }
+            props.fine_tune_object_axis = axis_map.get(detected_axis, "LOC_X")
+            
+            # Get min/max values based on axis
+            if "LOC" in detected_axis:
+                axis_idx = ["X", "Y", "Z"].index(detected_axis.split()[-1])
+                props.fine_tune_object_min_value = props.from_object_min_location[axis_idx]
+                props.fine_tune_object_max_value = props.from_object_max_location[axis_idx],
+            elif "ROT" in detected_axis:
+                axis_idx = ["X", "Y", "Z"].index(detected_axis.split()[-1])
+                props.fine_tune_object_min_value = props.from_object_min_rotation[axis_idx]
+                props.fine_tune_object_max_value = props.from_object_max_rotation[axis_idx]
+            elif "SCALE" in detected_axis:
+                axis_idx = ["X", "Y", "Z"].index(detected_axis.split()[-1])
+                props.fine_tune_object_min_value = props.from_object_min_scale[axis_idx]
+                props.fine_tune_object_max_value = props.from_object_max_scale[axis_idx]
 
 class ANIM_OT_close_fine_tune(bpy.types.Operator):
     bl_idname = "anim.close_fine_tune"
@@ -1508,6 +2303,7 @@ class ANIM_OT_close_fine_tune(bpy.types.Operator):
     def execute(self, context):
         context.scene.source_fine_tune_mode = False
         return {'FINISHED'}
+
 
 #---------------------------------------
 # Source>Recording Operators
@@ -1548,6 +2344,7 @@ class ANIM_OT_record_from_min(bpy.types.Operator):
         props.from_armature = obj.name
         props.from_bone = bone.name
         props.from_min_location = bone.location[:]
+        props.from_min_scale = bone.scale[:]
         euler = ensure_euler_rotation(bone)
         props.from_min_rotation = (euler.x, euler.y, euler.z)
         props.from_has_min = True
@@ -1567,6 +2364,7 @@ class ANIM_OT_record_from_min(bpy.types.Operator):
         # Set as FROM object and record min
         props.from_object = obj.name
         props.from_object_min_location = obj.location[:]
+        props.from_object_min_scale = obj.scale[:]
         euler = ensure_object_euler_rotation(obj)
         props.from_object_min_rotation = (euler.x, euler.y, euler.z)
         props.from_object_has_min = True
@@ -1635,6 +2433,7 @@ class ANIM_OT_record_from_max(bpy.types.Operator):
         
         # Record max values
         props.from_max_location = bone.location[:]
+        props.from_max_scale = bone.scale[:]
         euler = ensure_euler_rotation(bone)
         props.from_max_rotation = (euler.x, euler.y, euler.z)
         props.from_has_max = True
@@ -1657,6 +2456,7 @@ class ANIM_OT_record_from_max(bpy.types.Operator):
         
         # Record max values
         props.from_object_max_location = obj.location[:]
+        props.from_object_max_scale = obj.scale[:]
         euler = ensure_object_euler_rotation(obj)
         props.from_object_max_rotation = (euler.x, euler.y, euler.z)
         props.from_object_has_max = True
@@ -1671,11 +2471,13 @@ class ANIM_OT_record_from_max(bpy.types.Operator):
         """Detect primary axis for bone transforms."""
         min_vals = {
             'location': props.from_min_location,
-            'rotation': props.from_min_rotation
+            'rotation': props.from_min_rotation,
+            'scale': props.from_min_scale
         }
         max_vals = {
             'location': props.from_max_location,
-            'rotation': props.from_max_rotation
+            'rotation': props.from_max_rotation,
+            'scale': props.from_max_scale
         }
         
         changes = detect_significant_changes(min_vals, max_vals)
@@ -1688,20 +2490,26 @@ class ANIM_OT_record_from_max(bpy.types.Operator):
             axis_names = ['X', 'Y', 'Z']
             if transform_type == 'location':
                 props.from_detected_axis = f"LOC {axis_names[axis]}"
-            else:
+            elif transform_type == 'rotation_euler':
                 props.from_detected_axis = f"ROT {axis_names[axis]}"
+            elif transform_type == 'scale':
+                props.from_detected_axis = f"SCALE {axis_names[axis]}"
+            else:  # scale
+                props.from_detected_axis = f"SCALE {axis_names[axis]}"
         else:
             props.from_detected_axis = "No significant change detected"
     
     def detect_object_axis(self, props):
         """Detect primary axis for object transforms."""
         min_vals = {
-            'location': props.from_object_min_location,
-            'rotation': props.from_object_min_rotation
+        'location': props.from_object_min_location,
+        'rotation': props.from_object_min_rotation,
+        'scale': props.from_object_min_scale  # Add this
         }
         max_vals = {
             'location': props.from_object_max_location,
-            'rotation': props.from_object_max_rotation
+            'rotation': props.from_object_max_rotation,
+            'scale': props.from_object_max_scale  # Add this
         }
         
         changes = detect_significant_changes(min_vals, max_vals)
@@ -1714,8 +2522,10 @@ class ANIM_OT_record_from_max(bpy.types.Operator):
             axis_names = ['X', 'Y', 'Z']
             if transform_type == 'location':
                 props.from_object_detected_axis = f"LOC {axis_names[axis]}"
-            else:
+            elif transform_type == 'rotation_euler':
                 props.from_object_detected_axis = f"ROT {axis_names[axis]}"
+            elif transform_type == 'scale':
+                props.from_object_detected_axis = f"SCALE {axis_names[axis]}"
         else:
             props.from_object_detected_axis = "No significant change detected"
 
@@ -1758,7 +2568,8 @@ class POSE_OT_record_to_min_pose(bpy.types.Operator):
         to_data = get_to_bones_data(props)
         
         for bone in selected_bones:
-            ensure_euler_rotation(bone, True)
+            # Use IK-aware bone transform recording
+            location, rotation, scale = self.get_bone_transforms(bone)
             
             bone_data = to_data.get(bone.name, {
                 'armature': obj.name,
@@ -1771,8 +2582,9 @@ class POSE_OT_record_to_min_pose(bpy.types.Operator):
                 'detected_changes': []
             })
             
-            bone_data['min_location'] = list(bone.location)
-            bone_data['min_rotation'] = list(ensure_euler_rotation(bone, True))
+            bone_data['min_location'] = location
+            bone_data['min_rotation'] = rotation
+            bone_data['min_scale'] = scale
             bone_data['has_min'] = True
             bone_data['has_max'] = False  # Reset max when recording new min
             bone_data['detected_changes'] = []  # Reset changes
@@ -1783,67 +2595,260 @@ class POSE_OT_record_to_min_pose(bpy.types.Operator):
         
         self.report({'INFO'}, f"Recorded MIN pose for {len(selected_bones)} bones")
         return {'FINISHED'}
+    
+    def get_bone_transforms(self, bone):
+        """Get bone transforms, handling IK constraints."""
+        # Check if bone has IK constraints or is affected by IK
+        has_ik = self.bone_has_ik_influence(bone)
+        
+        if has_ik:
+            # For IK-controlled bones, get the actual world space rotation
+            # and convert it to local space
+            location, rotation, scale = self.get_ik_bone_transforms(bone)
+        else:
+            # Standard method for non-IK bones
+            location = list(bone.location)
+            scale = list(bone.scale)
+            euler = ensure_euler_rotation(bone, True)
+            rotation = list(euler)
+        
+        return location, rotation, scale
+    
+    def bone_has_ik_influence(self, bone):
+        """Check if bone is influenced by IK constraints."""
+        # Check if the bone itself has IK constraints
+        for constraint in bone.constraints:
+            if constraint.type in ['IK', 'SPLINE_IK', 'TRACK_TO', 'DAMPED_TRACK', 'LOCKED_TRACK']:
+                return True
+        
+        # Check if bone is part of an IK chain by looking at children
+        def check_ik_chain(check_bone, depth=0):
+            if depth > 10:  # Prevent infinite recursion
+                return False
+            for child in check_bone.children:
+                for constraint in child.constraints:
+                    if constraint.type in ['IK', 'SPLINE_IK']:
+                        # Check if this bone is the target or in the chain
+                        if hasattr(constraint, 'target') and constraint.target == bone.id_data:
+                            if hasattr(constraint, 'subtarget') and constraint.subtarget == bone.name:
+                                return True
+                        # Check chain length for IK
+                        if constraint.type == 'IK' and hasattr(constraint, 'chain_count'):
+                            if constraint.chain_count == 0 or depth < constraint.chain_count:
+                                return True
+                if check_ik_chain(child, depth + 1):
+                    return True
+            return False
+        
+        return check_ik_chain(bone)
+    
+    def get_ik_bone_transforms(self, bone):
+        """Get transforms for IK-influenced bones."""
+        import mathutils
+        
+        # Get the bone's current matrix in armature space
+        armature = bone.id_data
+        
+        # Get the final matrix (after all constraints)
+        if bone.parent:
+            # Get relative to parent
+            parent_matrix = bone.parent.matrix.inverted()
+            relative_matrix = parent_matrix @ bone.matrix
+        else:
+            # No parent, use bone matrix directly
+            relative_matrix = bone.matrix.copy()
+        
+        # Extract transforms from matrix
+        location = relative_matrix.to_translation()
+        rotation_quat = relative_matrix.to_quaternion()
+        scale = relative_matrix.to_scale()
+        
+        # Convert quaternion to euler
+        # Try to maintain current rotation mode if possible
+        if bone.rotation_mode == 'QUATERNION':
+            # Convert to XYZ euler for consistency
+            euler = rotation_quat.to_euler('XYZ')
+        elif bone.rotation_mode == 'AXIS_ANGLE':
+            # Convert to XYZ euler
+            euler = rotation_quat.to_euler('XYZ')
+        else:
+            # Use the bone's current rotation mode
+            euler = rotation_quat.to_euler(bone.rotation_mode)
+        
+        return list(location), list(euler), list(scale)
 
 class POSE_OT_record_to_max_pose(bpy.types.Operator):
     bl_idname = "pose.record_to_max_pose"
     bl_label = "Record MAX Pose"
-    bl_description = "Record current pose as maximum and detect changes for all target bones"
+    bl_description = "Record current pose as maximum and detect changes for all bones with MIN recorded"
 
     def execute(self, context):
         props = context.scene.driver_recorder_props
-        obj, selected_bones = get_selected_pose_bones(context)
+        to_data = get_to_bones_data(props)
         
-        if not obj or not selected_bones:
-            self.report({'ERROR'}, "Please select bones in Pose Mode")
+        # Find all bones that have MIN recorded
+        bones_with_min = []
+        armature_name = None
+        
+        for bone_name, bone_data in to_data.items():
+            if bone_data.get('has_min', False):
+                bones_with_min.append(bone_name)
+                if not armature_name:
+                    armature_name = bone_data.get('armature')
+        
+        if not bones_with_min:
+            self.report({'ERROR'}, "No bones with MIN pose recorded. Please record MIN pose first.")
             return {'CANCELLED'}
         
-        to_data = get_to_bones_data(props)
-        bones_processed = 0
+        # Find the armature object
+        armature_obj = context.scene.objects.get(armature_name)
+        if not armature_obj or armature_obj.type != 'ARMATURE':
+            self.report({'ERROR'}, f"Armature '{armature_name}' not found in scene")
+            return {'CANCELLED'}
         
-        for bone in selected_bones:
-            if bone.name in to_data and to_data[bone.name]['has_min']:
-                ensure_euler_rotation(bone, True)
-                bone_data = to_data[bone.name]
-                
-                # Record max values
-                bone_data['max_location'] = list(bone.location)
-                bone_data['max_rotation'] = list(ensure_euler_rotation(bone, True))
-                bone_data['has_max'] = True
-                
-                # Detect changes
-                min_vals = {
-                    'location': bone_data['min_location'],
-                    'rotation': bone_data['min_rotation']
-                }
-                max_vals = {
-                    'location': bone_data['max_location'],
-                    'rotation': bone_data['max_rotation']
-                }
-                
-                changes = detect_significant_changes(min_vals, max_vals)
-                bone_data['detected_changes'] = []
-                
-                for transform_type, axis, min_val, max_val in changes:
-                    axis_names = ['X', 'Y', 'Z']
-                    if transform_type == 'location':
-                        change_str = f"LOC {axis_names[axis]}"
-                    else:
-                        change_str = f"ROT {axis_names[axis]}"
-                    
-                    bone_data['detected_changes'].append({
-                        'type': transform_type,
-                        'axis': axis,
-                        'display': change_str,
-                        'min_val': min_val,
-                        'max_val': max_val
-                    })
-                
-                bones_processed += 1
+        bones_processed = 0
+        bones_not_found = []
+        
+        for bone_name in bones_with_min:
+            bone = armature_obj.pose.bones.get(bone_name)
+            if not bone:
+                bones_not_found.append(bone_name)
+                continue
+            
+            bone_data = to_data[bone_name]
+            
+            # Record max values using IK-aware method
+            location, rotation, scale = self.get_bone_transforms(bone)
+            
+            bone_data['max_location'] = location
+            bone_data['max_rotation'] = rotation
+            bone_data['max_scale'] = scale
+            bone_data['has_max'] = True
+            
+            # Detect changes
+            min_vals = {
+                'location': bone_data['min_location'],
+                'rotation': bone_data['min_rotation'],
+                'scale': bone_data.get('min_scale', [1, 1, 1])  # Default scale if not recorded
+            }
+            max_vals = {
+                'location': bone_data['max_location'],
+                'rotation': bone_data['max_rotation'],
+                'scale': bone_data['max_scale']
+            }
+            
+            changes = detect_significant_changes(min_vals, max_vals)
+            bone_data['detected_changes'] = []
+            
+            for transform_type, axis, min_val, max_val in changes:
+                axis_names = ['X', 'Y', 'Z']
+                if transform_type == 'location':
+                    change_str = f"LOC {axis_names[axis]}"
+                elif transform_type == 'rotation_euler':
+                    change_str = f"ROT {axis_names[axis]}"
+                elif transform_type == 'scale':
+                    change_str = f"SCALE {axis_names[axis]}"
+
+                bone_data['detected_changes'].append({
+                    'type': transform_type,
+                    'axis': axis,
+                    'display': change_str,
+                    'min_val': min_val,
+                    'max_val': max_val
+                })
+            
+            bones_processed += 1
         
         set_to_bones_data(props, to_data)
         
-        self.report({'INFO'}, f"Recorded MAX pose for {bones_processed} bones")
+        # Report results
+        if bones_not_found:
+            self.report({'WARNING'}, f"Recorded MAX pose for {bones_processed} bones. Could not find: {', '.join(bones_not_found)}")
+        else:
+            self.report({'INFO'}, f"Recorded MAX pose for {bones_processed} bones from armature '{armature_name}'")
+        
         return {'FINISHED'}
+    
+    def get_bone_transforms(self, bone):
+        """Get bone transforms, handling IK constraints."""
+        # Check if bone has IK constraints or is affected by IK
+        has_ik = self.bone_has_ik_influence(bone)
+        
+        if has_ik:
+            # For IK-controlled bones, get the actual world space rotation
+            # and convert it to local space
+            location, rotation, scale = self.get_ik_bone_transforms(bone)
+        else:
+            # Standard method for non-IK bones
+            location = list(bone.location)
+            scale = list(bone.scale)
+            euler = ensure_euler_rotation(bone, True)
+            rotation = list(euler)
+        
+        return location, rotation, scale
+    
+    def bone_has_ik_influence(self, bone):
+        """Check if bone is influenced by IK constraints."""
+        # Check if the bone itself has IK constraints
+        for constraint in bone.constraints:
+            if constraint.type in ['IK', 'SPLINE_IK', 'TRACK_TO', 'DAMPED_TRACK', 'LOCKED_TRACK']:
+                return True
+        
+        # Check if bone is part of an IK chain by looking at children
+        def check_ik_chain(check_bone, depth=0):
+            if depth > 10:  # Prevent infinite recursion
+                return False
+            for child in check_bone.children:
+                for constraint in child.constraints:
+                    if constraint.type in ['IK', 'SPLINE_IK']:
+                        # Check if this bone is the target or in the chain
+                        if hasattr(constraint, 'target') and constraint.target == bone.id_data:
+                            if hasattr(constraint, 'subtarget') and constraint.subtarget == bone.name:
+                                return True
+                        # Check chain length for IK
+                        if constraint.type == 'IK' and hasattr(constraint, 'chain_count'):
+                            if constraint.chain_count == 0 or depth < constraint.chain_count:
+                                return True
+                if check_ik_chain(child, depth + 1):
+                    return True
+            return False
+        
+        return check_ik_chain(bone)
+    
+    def get_ik_bone_transforms(self, bone):
+        """Get transforms for IK-influenced bones."""
+        import mathutils
+        
+        # Get the bone's current matrix in armature space
+        armature = bone.id_data
+        
+        # Get the final matrix (after all constraints)
+        if bone.parent:
+            # Get relative to parent
+            parent_matrix = bone.parent.matrix.inverted()
+            relative_matrix = parent_matrix @ bone.matrix
+        else:
+            # No parent, use bone matrix directly
+            relative_matrix = bone.matrix.copy()
+        
+        # Extract transforms from matrix
+        location = relative_matrix.to_translation()
+        rotation_quat = relative_matrix.to_quaternion()
+        scale = relative_matrix.to_scale()
+        
+        # Convert quaternion to euler
+        # Try to maintain current rotation mode if possible
+        if bone.rotation_mode == 'QUATERNION':
+            # Convert to XYZ euler for consistency
+            euler = rotation_quat.to_euler('XYZ')
+        elif bone.rotation_mode == 'AXIS_ANGLE':
+            # Convert to XYZ euler
+            euler = rotation_quat.to_euler('XYZ')
+        else:
+            # Use the bone's current rotation mode
+            euler = rotation_quat.to_euler(bone.rotation_mode)
+        
+        return list(location), list(euler), list(scale)
 
 #---------------------------------------
 # Target>Shapekey Operators
@@ -1959,6 +2964,7 @@ class MESH_OT_remove_shapekey_target(bpy.types.Operator):
             self.report({'ERROR'}, "Shape key not found in list")
         
         return {'FINISHED'}
+
 
 #---------------------------------------
 # Target>Path Operators
@@ -2120,7 +3126,6 @@ class ANIM_OT_create_drivers(bpy.types.Operator):
     bl_idname = "anim.create_drivers"
     bl_label = "Create Drivers"
     bl_description = "Create drivers from FROM source to all targets"
-
     def execute(self, context):
         props = context.scene.driver_recorder_props
         
@@ -2130,11 +3135,13 @@ class ANIM_OT_create_drivers(bpy.types.Operator):
         from_min = None
         from_max = None
         
-        # Automatically detect source type and validate
-        if props.from_bone:
-            # Using bone source
-            if not (props.from_has_min and props.from_has_max and props.from_detected_axis):
-                self.report({'ERROR'}, "FROM bone needs MIN, MAX, and detected axis")
+        # Determine source - check what's actually configured
+        # Priority: Check if we have valid recorded data first
+        if props.from_bone and props.from_has_min and props.from_has_max and props.from_detected_axis:
+            # Using bone source - verify it still exists
+            armature = bpy.data.objects.get(props.from_armature)
+            if not armature or props.from_bone not in armature.pose.bones:
+                self.report({'ERROR'}, f"Source bone '{props.from_bone}' not found in armature '{props.from_armature}'")
                 return {'CANCELLED'}
             
             # Get FROM bone values
@@ -2145,18 +3152,23 @@ class ANIM_OT_create_drivers(bpy.types.Operator):
                 from_min = props.from_min_location[from_axis_index]
                 from_max = props.from_max_location[from_axis_index]
                 from_prop = 'location'
-            else:  # ROT
+            elif from_axis_type == 'ROT':
                 from_min = props.from_min_rotation[from_axis_index]
                 from_max = props.from_max_rotation[from_axis_index]
                 from_prop = 'rotation_euler'
+            elif from_axis_type == 'SCALE':
+                from_min = props.from_min_scale[from_axis_index]
+                from_max = props.from_max_scale[from_axis_index]
+                from_prop = 'scale'
             
             from_path = f"{props.from_armature}.pose.bones[\"{props.from_bone}\"].{from_prop}[{from_axis_index}]"
             source_name = props.from_armature
             
-        elif props.from_object:
-            # Using object source
-            if not (props.from_object_has_min and props.from_object_has_max and props.from_object_detected_axis):
-                self.report({'ERROR'}, "FROM object needs MIN, MAX, and detected axis")
+        elif props.from_object and props.from_object_has_min and props.from_object_has_max and props.from_object_detected_axis:
+            # Using object source - verify it still exists
+            obj = bpy.data.objects.get(props.from_object)
+            if not obj:
+                self.report({'ERROR'}, f"Source object '{props.from_object}' not found")
                 return {'CANCELLED'}
             
             # Get FROM object values
@@ -2167,16 +3179,20 @@ class ANIM_OT_create_drivers(bpy.types.Operator):
                 from_min = props.from_object_min_location[from_axis_index]
                 from_max = props.from_object_max_location[from_axis_index]
                 from_prop = 'location'
-            else:  # ROT
+            elif from_axis_type == 'ROT':
                 from_min = props.from_object_min_rotation[from_axis_index]
                 from_max = props.from_object_max_rotation[from_axis_index]
                 from_prop = 'rotation_euler'
+            elif from_axis_type == 'SCALE':
+                from_min = props.from_object_min_scale[from_axis_index]
+                from_max = props.from_object_max_scale[from_axis_index]
+                from_prop = 'scale'
             
             from_path = f"{props.from_object}.{from_prop}[{from_axis_index}]"
             source_name = props.from_object
             
         else:
-            self.report({'ERROR'}, "No source configured. Please record MIN and MAX first.")
+            self.report({'ERROR'}, "No source configured with MIN, MAX, and detected axis. Please record MIN and MAX first.")
             return {'CANCELLED'}
         
         # Validate that we have all required source data
@@ -2184,6 +3200,7 @@ class ANIM_OT_create_drivers(bpy.types.Operator):
             self.report({'ERROR'}, "Failed to configure source data")
             return {'CANCELLED'}
         
+        # Rest of the method remains the same...
         drivers_created = 0
         
         if props.target_type == 'CUSTOM_POSE':
@@ -2293,7 +3310,7 @@ class ANIM_OT_create_drivers(bpy.types.Operator):
                         from_path=from_path,
                         fromMin=from_min,
                         fromMax=from_max,
-                        to_path=path,  # path is already the full path here
+                        to_path=path,
                         toMin=to_min,
                         toMax=to_max,
                         selfRotation=False,
@@ -2310,30 +3327,29 @@ class ANIM_OT_create_drivers(bpy.types.Operator):
         self.report({'INFO'}, f"Created {drivers_created} drivers")
         return {'FINISHED'}
 
+
 class ANIM_OT_remove_drivers(bpy.types.Operator):
     bl_idname = "anim.remove_drivers"
     bl_label = "Remove Drivers"
-    bl_description = "Remove all drivers from targets and selected objects"
+    bl_description = "Remove drivers from configured targets only"
 
     def execute(self, context):
         props = context.scene.driver_recorder_props
         
-        # Automatically detect source type and validate
-        if props.from_bone:
-            if not props.from_bone:
-                self.report({'ERROR'}, "No FROM bone set")
-                return {'CANCELLED'}
+        # Validate we have a source configured
+        source_configured = False
+        if props.from_bone and props.from_armature:
+            source_configured = True
         elif props.from_object:
-            if not props.from_object:
-                self.report({'ERROR'}, "No FROM object set")
-                return {'CANCELLED'}
-        else:
+            source_configured = True
+        
+        if not source_configured:
             self.report({'ERROR'}, "No source configured")
             return {'CANCELLED'}
         
         drivers_removed = 0
         
-        # Remove drivers from configured targets
+        # Remove drivers from configured targets only
         if props.target_type == 'CUSTOM_POSE':
             to_data = get_to_bones_data(props)
             
@@ -2342,7 +3358,7 @@ class ANIM_OT_remove_drivers(bpy.types.Operator):
                 if not armature or not armature.animation_data:
                     continue
                 
-                # Remove drivers for this bone
+                # Remove drivers for this specific bone's detected changes
                 for change in bone_data.get('detected_changes', []):
                     to_prop = change['type']
                     to_axis = change['axis']
@@ -2351,8 +3367,9 @@ class ANIM_OT_remove_drivers(bpy.types.Operator):
                     try:
                         armature.driver_remove(data_path, to_axis)
                         drivers_removed += 1
-                    except:
-                        pass
+                        print(f"✓ Removed driver: {armature.name}.{data_path}[{to_axis}]")
+                    except Exception as e:
+                        print(f"Driver not found or already removed: {data_path}[{to_axis}]")
         
         elif props.target_type == 'SHAPEKEY_LIST':
             shapekey_data = get_shapekey_list_data(props)
@@ -2367,83 +3384,34 @@ class ANIM_OT_remove_drivers(bpy.types.Operator):
                 try:
                     obj.data.shape_keys.driver_remove(data_path)
                     drivers_removed += 1
-                except:
-                    pass
+                    print(f"✓ Removed shapekey driver: {obj.name}.{data_path}")
+                except Exception as e:
+                    print(f"Shapekey driver not found or already removed: {data_path}")
         
         elif props.target_type == 'PATH_LIST':
             path_data = get_path_list_data(props)
             
             for path, path_info in path_data.items():
-                # Extract object and data path from custom path
-                if path.startswith('bpy.data.objects["'):
-                    obj_match = re.match(r'bpy\.data\.objects\["([^"]+)"\]\.(.+)', path)
-                    if obj_match:
-                        obj_name, data_path = obj_match.groups()
-                        obj = bpy.data.objects.get(obj_name)
-                        if obj:
-                            try:
-                                # Handle array indices in data path
-                                if '[' in data_path and ']' in data_path:
-                                    base_path = re.sub(r'\[\d+\]', '', data_path)
-                                    index_match = re.search(r'\[(\d+)\]', data_path)
-                                    if index_match:
-                                        index = int(index_match.group(1))
-                                        obj.driver_remove(base_path, index)
-                                    else:
-                                        obj.driver_remove(data_path)
-                                else:
-                                    obj.driver_remove(data_path)
-                                drivers_removed += 1
-                            except:
-                                pass
-        
-        # Remove drivers from ALL selected objects
-        selected_objects = context.selected_objects
-        for obj in selected_objects:
-            if not obj.animation_data:
-                continue
+                # Parse the custom path to get object and data path
+                data_block, data_path, index = parse_target_path(path)
                 
-            # Collect all drivers to remove (to avoid modifying collection while iterating)
-            drivers_to_remove = []
-            
-            if obj.animation_data.drivers:
-                for driver in obj.animation_data.drivers:
-                    drivers_to_remove.append((driver.data_path, driver.array_index))
-            
-            # Remove all drivers from this object
-            for data_path, array_index in drivers_to_remove:
-                try:
-                    if array_index >= 0:
-                        obj.driver_remove(data_path, array_index)
-                    else:
-                        obj.driver_remove(data_path)
-                    drivers_removed += 1
-                except:
-                    pass
-            
-            # Also remove drivers from shape keys if they exist
-            if hasattr(obj.data, 'shape_keys') and obj.data.shape_keys and obj.data.shape_keys.animation_data:
-                shape_drivers_to_remove = []
-                if obj.data.shape_keys.animation_data.drivers:
-                    for driver in obj.data.shape_keys.animation_data.drivers:
-                        shape_drivers_to_remove.append((driver.data_path, driver.array_index))
-                
-                for data_path, array_index in shape_drivers_to_remove:
+                if data_block and data_path:
                     try:
-                        if array_index >= 0:
-                            obj.data.shape_keys.driver_remove(data_path, array_index)
+                        if index >= 0:
+                            data_block.driver_remove(data_path, index)
                         else:
-                            obj.data.shape_keys.driver_remove(data_path)
+                            data_block.driver_remove(data_path)
                         drivers_removed += 1
-                    except:
-                        pass
+                        print(f"✓ Removed custom path driver: {path}")
+                    except Exception as e:
+                        print(f"Custom path driver not found or already removed: {path}")
         
-        self.report({'INFO'}, f"Removed {drivers_removed} drivers from targets and selected objects")
+        if drivers_removed > 0:
+            self.report({'INFO'}, f"Removed {drivers_removed} drivers from configured targets")
+        else:
+            self.report({'WARNING'}, "No drivers were removed (may not exist or already removed)")
+        
         return {'FINISHED'}
-
-
-# Add these operator classes to operators.py
-
 class ANIM_OT_mirror_source(bpy.types.Operator):
     """Mirror source bone/object to opposite side"""
     bl_idname = "anim.mirror_source"
@@ -2640,6 +3608,7 @@ classes = (
     ANIM_OT_object_eyedropper,
     POSE_OT_remove_pose_bone,
     ANIM_OT_toggle_fine_tune,
+    ANIM_OT_close_fine_tune,
     MESH_OT_edit_shapekey_target,
     SCENE_OT_edit_path_target,
     ANIM_OT_mirror_source,
