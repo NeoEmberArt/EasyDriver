@@ -75,9 +75,10 @@ class BONEMINMAX_PT_main_panel(bpy.types.Panel):
         # Record buttons (no source type selection needed)
         row = col.row(align=True)
         row.scale_y = 1.2
-        
-        row.operator("anim.record_from_min", text="Record Min")
-        row.operator("anim.record_from_max", text="Record Max")
+        has_min = props.from_has_min if props.from_bone else props.from_object_has_min
+        has_max = props.from_has_max if props.from_bone else props.from_object_has_max
+        row.operator("anim.record_from_min", text="Record Min", icon='NODE_SOCKET_GEOMETRY' if has_min else 'NODE_SOCKET_MATERIAL')
+        row.operator("anim.record_from_max", text="Record Max", icon='NODE_SOCKET_GEOMETRY' if has_max else 'NODE_SOCKET_MATERIAL')
         
         col.separator(factor=0.5)
         
@@ -103,6 +104,30 @@ class BONEMINMAX_PT_main_panel(bpy.types.Panel):
                 # Fine tune inputs
                 col_tune = info.column()
                 col_tune.separator(factor=0.3)
+                
+                # Manual source selection section
+                selection_box = col_tune.box()
+                selection_box.label(text="Change Source:", icon='OBJECT_DATA')
+                
+                # Show appropriate selection based on current source type
+                if props.from_bone:
+                    # Armature + Bone selection
+                    selection_box.prop(props, "manual_source_armature", text="Armature")
+                    if props.manual_source_armature:
+                        selection_box.prop_search(props, "manual_source_bone", 
+                                                props.manual_source_armature.pose, "bones", 
+                                                text="Bone")
+                else:
+                    # Object selection
+                    selection_box.prop(props, "manual_source_object", text="Object")
+                
+                # Apply button - only show if user has selected something different
+                if props.from_bone and (props.manual_source_armature or props.manual_source_bone):
+                    selection_box.operator("anim.apply_manual_source", text="Apply New Source", icon='CHECKMARK')
+                elif props.from_object and props.manual_source_object:
+                    selection_box.operator("anim.apply_manual_source", text="Apply New Source", icon='CHECKMARK')
+                
+                col_tune.separator(factor=0.5)
                 
                 # Min/Max value inputs
                 row_inputs = col_tune.row(align=True)
@@ -130,24 +155,12 @@ class BONEMINMAX_PT_main_panel(bpy.types.Panel):
                     axis_row.prop(props, "fine_tune_axis", text="")
                 else:
                     axis_row.prop(props, "fine_tune_object_axis", text="")
-                
-                # Close button
-                close_row = col_tune.row()
-                close_row.operator("anim.close_fine_tune", text="", icon='X')
-                
+                                
             else:
                 # Normal status display
                 row = info.row(align=True)
                 
                 # Min/Max status (check appropriate properties)
-                min_col = row.column()
-                has_min = props.from_has_min if props.from_bone else props.from_object_has_min
-                min_col.label(text="Min", icon='KEYFRAME_HLT' if has_min else 'KEYFRAME')
-                
-                max_col = row.column()
-                has_max = props.from_has_max if props.from_bone else props.from_object_has_max
-                max_col.label(text="Max", icon='KEYFRAME_HLT' if has_max else 'KEYFRAME')
-                
                 # Detected axis
                 detected_axis = props.from_detected_axis if props.from_bone else props.from_object_detected_axis
                 if detected_axis:
@@ -288,12 +301,12 @@ class BONEMINMAX_PT_main_panel(bpy.types.Panel):
             # Show detected type
             type_row = add_box.row()
             if detected_type == 'BOOLEAN':
-                type_row.label(text="Detected: Boolean Property", icon='CHECKBOX_HLT')
+                type_row.label(text="Boolean Property", icon='CHECKBOX_HLT')
             else:
-                type_row.label(text="Detected: Float Property", icon='DRIVER')
+                type_row.label(text="Float Property", icon='DRIVER')
             
-            # Validate button
-            add_box.operator("scene.validate_path", text="Validate", icon='CHECKMARK')
+            # Validate button REMOVED for now!
+            #add_box.operator("scene.validate_path", text="Validate", icon='CHECKMARK')
             
             # Show appropriate value controls based on detected type
             if detected_type == 'FLOAT':
@@ -418,8 +431,24 @@ class BONEMINMAX_PT_main_panel(bpy.types.Panel):
         # Record buttons
         row = layout.row(align=True)
         row.scale_y = 1.2
-        row.operator("pose.record_to_min_pose", text="Record Min Pose")
-        row.operator("pose.record_to_max_pose", text="Record Max Pose")
+
+        to_data = get_to_bones_data(props)
+
+
+        has_min = False
+        has_max = False
+        if to_data:
+            for bone_data in to_data.values():
+                for bone_name, bone_data in to_data.items():
+                    if bone_data.get('has_min'):
+                        has_min = True
+                    if bone_data.get('has_max'):
+                        has_max = True
+        
+        
+        row.operator("pose.record_to_min_pose", text="Record Min Pose", icon='NODE_SOCKET_GEOMETRY' if has_min else 'NODE_SOCKET_MATERIAL')
+        row.operator("pose.record_to_max_pose", text="Record Max Pose", icon='NODE_SOCKET_GEOMETRY' if has_max else 'NODE_SOCKET_MATERIAL')
+        
         
         # Target list
         to_data = get_to_bones_data(props)
