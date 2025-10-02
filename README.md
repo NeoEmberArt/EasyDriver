@@ -41,6 +41,7 @@ This addon automatically detects movement patterns and creates perfectly mapped 
 - Automatically detects which bones changed and on which axes.  
 - Perfect for facial rigs, mechanical parts, and complex deformations.
 
+![example](https://public-files.gumroad.com/bk9kkufdzd8tfal3s2v0haos28x7)
 ![example](https://public-files.gumroad.com/bgv9hlk0qvocir2ln44afsw3mmx1)
 
 💡 *Example: custom poses via bone transformations (toe spread or corrective movement via a bone slider).*
@@ -49,16 +50,17 @@ This addon automatically detects movement patterns and creates perfectly mapped 
 - Browse and select shape keys from any mesh object.  
 - Set custom min/max values (0.0 to 1.0) with **live feedback** so you know EXACTLY what it looks like.  
 - Drive multiple shape keys at the same time easily.  
-
+![example](https://public-files.gumroad.com/6vq0ylmikf1wnt842p4r7c3yuwif)
 ![example](https://public-files.gumroad.com/mxknqkhr5akczt3k2n69o9garsac)
-💡 *Example: corrective shape keys.*
+💡 *Example: viseme control & corrective shape keys*
 
 #### 🔹 Custom Path Targets
 - Drive **ANY Blender property** using custom paths.  
 - Built-in path validation.  
 - Supports both float ranges and boolean toggles.  
-- Multiple paths can be setup at once.  
+- Multiple paths can be setup at once.
 
+![example](https://public-files.gumroad.com/gplktq8l30pgfheo8gyylcddnfs3)
 ![example](https://public-files.gumroad.com/sn9mvlvcm1s41rux4chshuh6rzj0)
 💡 *Examples: hide/show IK bones, control modifier strength, toggle visibility, adjust constraint influence.*
 
