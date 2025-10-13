@@ -6,7 +6,7 @@
 ### Consider Supporting developement of future plugins! 
 https://embercat.gumroad.com/l/EasyDriver
 The Gumroad page includes tutorial files and always hosts the most up-to-date version.
-![example](https://public-files.gumroad.com/ycus5s2abf4cuahkn7l097ylq4rf)
+![example](https://public-files.gumroad.com/14911sjdklw5gxi57y7dv5xsquos)
 
 
 ## 🤔 What does this even do?
