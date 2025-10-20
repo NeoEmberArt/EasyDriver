@@ -17,6 +17,15 @@ from .core_functions import (
 # List Properties/Variables here
 #---------------------------------------
 class DriverRecorderProperties(bpy.types.PropertyGroup):
+    path_recorded_min: bpy.props.BoolProperty(
+        name="Path Min Recorded",
+        default=False
+    )
+    
+    path_recorded_max: bpy.props.BoolProperty(
+        name="Path Max Recorded",
+        default=False
+    )
     # Add this where you register other scene properties
     manual_source_armature: bpy.props.PointerProperty(
         name="Armature",
@@ -313,889 +322,6 @@ class ANIM_OT_object_eyedropper(bpy.types.Operator):
         if result and obj:
             # Return the original object (not evaluated)
             return bpy.data.objects.get(obj.name)
-        
-        return None
-
-
-class ANIM_OT_path_eyedropper(bpy.types.Operator):
-    """Eyedropper tool to capture property data paths by detecting changes"""
-    bl_idname = "anim.path_eyedropper"
-    bl_label = "Path Eyedropper"
-    bl_description = "Click and change any property to capture its data path"
-    bl_options = {'REGISTER', 'UNDO'}
-
-    _timer = None
-    _initial_state = {}
-    
-    def modal(self, context, event):
-        if event.type == 'ESC':
-            self.cancel(context)
-            return {'CANCELLED'}
-        
-        if event.type == 'TIMER':
-            # Check for changes
-            detected_path = self.detect_changes(context)
-            if detected_path:
-                # Set the detected path
-                props = context.scene.driver_recorder_props
-                props.custom_path_input = detected_path
-                
-                self.report({'INFO'}, f"Captured path: {detected_path}")
-                self.finish(context)
-                return {'FINISHED'}
-        
-        return {'PASS_THROUGH'}
-    
-    def invoke(self, context, event):
-        # Set listening state
-        props = context.scene.driver_recorder_props
-        props.path_eyedropper_active = True
-        
-        # Store initial state
-        self.capture_initial_state(context)
-        
-        # Add timer
-        wm = context.window_manager
-        self._timer = wm.event_timer_add(0.1, window=context.window)
-        wm.modal_handler_add(self)
-        
-        self.report({'INFO'}, "Eyedropper active - change any property to capture its path")
-        return {'RUNNING_MODAL'}
-    
-    def cancel(self, context):
-        self.finish(context)
-    
-    def finish(self, context):
-        # Clean up
-        props = context.scene.driver_recorder_props
-        props.path_eyedropper_active = False
-        
-        if self._timer:
-            wm = context.window_manager
-            wm.event_timer_remove(self._timer)
-            self._timer = None
-        
-        # Clear state
-        self._initial_state.clear()
-    
-    def safe_copy_value(self, value):
-        """Safely copy a value, handling different types"""
-        try:
-            if hasattr(value, 'copy'):
-                return value.copy()
-            elif hasattr(value, '__len__') and not isinstance(value, str):
-                return list(value)
-            else:
-                return value
-        except:
-            return value
-    
-    def safe_get_attr(self, obj, attr, default=None):
-        """Safely get an attribute, returning default if it doesn't exist"""
-        try:
-            if hasattr(obj, attr):
-                return getattr(obj, attr)
-            return default
-        except:
-            return default
-    
-    def values_equal(self, val1, val2, tolerance=0.001):
-        """Compare two values with tolerance for floats"""
-        try:
-            if hasattr(val1, '__len__') and hasattr(val2, '__len__') and not isinstance(val1, str):
-                if len(val1) != len(val2):
-                    return False
-                return all(abs(a - b) <= tolerance for a, b in zip(val1, val2))
-            elif isinstance(val1, float) or isinstance(val2, float):
-                return abs(val1 - val2) <= tolerance
-            else:
-                return val1 == val2
-        except:
-            return val1 == val2
-    
-    def capture_initial_state(self, context):
-        """Capture initial state of various properties"""
-        self._initial_state.clear()
-        
-        # Monitor all objects
-        for obj in context.view_layer.objects:
-            obj_data = {}
-            
-            # Basic object properties
-            obj_data['location'] = self.safe_copy_value(obj.location)
-            obj_data['rotation_euler'] = self.safe_copy_value(obj.rotation_euler)
-            obj_data['rotation_quaternion'] = self.safe_copy_value(obj.rotation_quaternion)
-            obj_data['scale'] = self.safe_copy_value(obj.scale)
-            obj_data['hide_viewport'] = obj.hide_viewport
-            obj_data['hide_render'] = obj.hide_render
-            obj_data['hide_select'] = obj.hide_select
-            
-            # Display properties
-            if hasattr(obj, 'display'):
-                display_props = ['show_shadows', 'show_in_front', 'show_wire', 'show_all_edges', 
-                               'show_transparent', 'show_only_shape_key', 'show_bounds']
-                obj_data['display'] = {}
-                for prop in display_props:
-                    val = self.safe_get_attr(obj.display, prop)
-                    if val is not None:
-                        obj_data['display'][prop] = val
-            
-            # Collision properties
-            if hasattr(obj, 'collision') and obj.collision:
-                collision_props = ['absorption', 'damping_factor', 'damping_random', 'friction_factor', 
-                                 'friction_random', 'permeability', 'stickiness', 'thickness_inner', 
-                                 'thickness_outer', 'use']
-                obj_data['collision'] = {}
-                for prop in collision_props:
-                    val = self.safe_get_attr(obj.collision, prop)
-                    if val is not None:
-                        obj_data['collision'][prop] = self.safe_copy_value(val)
-            
-            # Rigid body properties
-            if hasattr(obj, 'rigid_body') and obj.rigid_body:
-                rb_props = ['mass', 'friction', 'restitution', 'linear_damping', 'angular_damping', 
-                           'use_margin', 'collision_margin', 'kinematic', 'enabled']
-                obj_data['rigid_body'] = {}
-                for prop in rb_props:
-                    val = self.safe_get_attr(obj.rigid_body, prop)
-                    if val is not None:
-                        obj_data['rigid_body'][prop] = self.safe_copy_value(val)
-            
-            # Constraints
-            if obj.constraints:
-                obj_data['constraints'] = {}
-                for constraint in obj.constraints:
-                    const_data = {
-                        'influence': constraint.influence,
-                        'mute': constraint.mute
-                    }
-                    # Add constraint-specific properties safely
-                    constraint_props = ['target', 'subtarget', 'use_x', 'use_y', 'use_z']
-                    for prop in constraint_props:
-                        val = self.safe_get_attr(constraint, prop)
-                        if val is not None:
-                            const_data[prop] = val
-                    obj_data['constraints'][constraint.name] = const_data
-            
-            # Pose bones (for armatures)
-            if obj.type == 'ARMATURE' and obj.pose:
-                obj_data['pose_bones'] = {}
-                for pose_bone in obj.pose.bones:
-                    pose_bone_data = {
-                        'location': self.safe_copy_value(pose_bone.location),
-                        'rotation_euler': self.safe_copy_value(pose_bone.rotation_euler),
-                        'rotation_quaternion': self.safe_copy_value(pose_bone.rotation_quaternion),
-                        'scale': self.safe_copy_value(pose_bone.scale),
-                        'lock_location': self.safe_copy_value(pose_bone.lock_location),
-                        'lock_rotation': self.safe_copy_value(pose_bone.lock_rotation),
-                        'lock_scale': self.safe_copy_value(pose_bone.lock_scale)
-                    }
-                    
-                    # Pose bone constraints
-                    if pose_bone.constraints:
-                        pose_bone_data['constraints'] = {}
-                        for constraint in pose_bone.constraints:
-                            const_data = {
-                                'influence': constraint.influence,
-                                'mute': constraint.mute
-                            }
-                            pose_bone_data['constraints'][constraint.name] = const_data
-                    
-                    obj_data['pose_bones'][pose_bone.name] = pose_bone_data
-            
-            # Shape keys
-            if obj.data and hasattr(obj.data, 'shape_keys') and obj.data.shape_keys:
-                obj_data['shape_keys'] = {}
-                for key_block in obj.data.shape_keys.key_blocks:
-                    obj_data['shape_keys'][key_block.name] = {
-                        'value': key_block.value,
-                        'mute': key_block.mute
-                    }
-            
-            # Modifiers
-            if obj.modifiers:
-                obj_data['modifiers'] = {}
-                for modifier in obj.modifiers:
-                    mod_data = {
-                        'show_viewport': modifier.show_viewport,
-                        'show_render': modifier.show_render
-                    }
-                    
-                    # Common modifier properties
-                    mod_props = ['strength', 'factor', 'offset', 'ratio', 'levels', 'angle_limit', 
-                               'iterations', 'lambda_factor', 'lambda_border', 'use_x', 'use_y', 'use_z',
-                               'width', 'segments', 'profile', 'limit_method', 'use_only_vertices',
-                               'use_limit_to_selection', 'use_smooth', 'use_repeat', 'use_clamp']
-                    for prop in mod_props:
-                        val = self.safe_get_attr(modifier, prop)
-                        if val is not None:
-                            mod_data[prop] = self.safe_copy_value(val)
-                    
-                    obj_data['modifiers'][modifier.name] = mod_data
-            
-            # Custom properties
-            obj_data['custom_props'] = {}
-            for key in obj.keys():
-                obj_data['custom_props'][key] = self.safe_copy_value(obj[key])
-            
-            self._initial_state[f"objects.{obj.name}"] = obj_data
-        
-        # Monitor cameras
-        for camera in bpy.data.cameras:
-            cam_data = {
-                'lens': camera.lens,
-                'sensor_width': camera.sensor_width,
-                'sensor_height': camera.sensor_height,
-                'clip_start': camera.clip_start,
-                'clip_end': camera.clip_end,
-                'type': camera.type,
-                'ortho_scale': camera.ortho_scale,
-                'shift_x': camera.shift_x,
-                'shift_y': camera.shift_y,
-                'dof': {}
-            }
-            
-            # Depth of field properties
-            if hasattr(camera, 'dof'):
-                dof_props = ['use_dof', 'focus_distance', 'aperture_fstop', 'aperture_blades', 'aperture_rotation']
-                for prop in dof_props:
-                    val = self.safe_get_attr(camera.dof, prop)
-                    if val is not None:
-                        cam_data['dof'][prop] = val
-            
-            # Custom properties
-            cam_data['custom_props'] = {}
-            for key in camera.keys():
-                cam_data['custom_props'][key] = self.safe_copy_value(camera[key])
-            
-            self._initial_state[f"cameras.{camera.name}"] = cam_data
-        
-        # Monitor lights
-        for light in bpy.data.lights:
-            light_data = {
-                'type': light.type,
-                'energy': light.energy,
-                'color': self.safe_copy_value(light.color),
-                'use_shadow': light.use_shadow,
-                'shadow_soft_size': light.shadow_soft_size,
-                'cutoff_distance': light.cutoff_distance,
-                'use_custom_distance': light.use_custom_distance
-            }
-            
-            # Type-specific properties
-            type_props = ['angle', 'spot_size', 'spot_blend', 'size', 'size_y', 'shape']
-            for prop in type_props:
-                val = self.safe_get_attr(light, prop)
-                if val is not None:
-                    light_data[prop] = val
-            
-            # Custom properties
-            light_data['custom_props'] = {}
-            for key in light.keys():
-                light_data['custom_props'][key] = self.safe_copy_value(light[key])
-            
-            self._initial_state[f"lights.{light.name}"] = light_data
-        
-        # Monitor armatures
-        for armature in bpy.data.armatures:
-            arm_data = {}
-            
-            # Armature display properties
-            arm_props = ['show_bone_custom_shapes', 'show_names', 'show_axes', 'display_type']
-            for prop in arm_props:
-                val = self.safe_get_attr(armature, prop)
-                if val is not None:
-                    arm_data[prop] = val
-            
-            # Bone collections visibility
-            arm_data['collections'] = {}
-            collections_attr = None
-            if hasattr(armature, 'collections_all'):
-                collections_attr = 'collections_all'
-            elif hasattr(armature, 'collections'):
-                collections_attr = 'collections'
-            
-            if collections_attr:
-                try:
-                    collections = getattr(armature, collections_attr)
-                    for collection in collections:
-                        arm_data['collections'][collection.name] = {
-                            'is_visible': collection.is_visible,
-                            'attr_name': collections_attr
-                        }
-                except:
-                    pass
-            
-            # Bone properties
-            arm_data['bones'] = {}
-            for bone in armature.bones:
-                bone_props = ['hide_select', 'hide', 'use_deform', 'use_inherit_rotation', 
-                             'use_inherit_scale', 'use_local_location', 'use_relative_parent',
-                             'envelope_distance', 'envelope_weight', 'head_radius', 'tail_radius']
-                bone_data = {}
-                for prop in bone_props:
-                    val = self.safe_get_attr(bone, prop)
-                    if val is not None:
-                        bone_data[prop] = self.safe_copy_value(val)
-                arm_data['bones'][bone.name] = bone_data
-            
-            # Custom properties
-            arm_data['custom_props'] = {}
-            for key in armature.keys():
-                arm_data['custom_props'][key] = self.safe_copy_value(armature[key])
-            
-            self._initial_state[f"armatures.{armature.name}"] = arm_data
-        
-        # Monitor materials
-        for mat in bpy.data.materials:
-            mat_data = {}
-            
-            # Basic material properties - check each one safely
-            mat_props = ['use_backface_culling', 'blend_method', 'shadow_method', 'alpha_threshold', 
-                        'use_screen_refraction', 'refraction_depth', 'use_sss_translucency']
-            for prop in mat_props:
-                val = self.safe_get_attr(mat, prop)
-                if val is not None:
-                    mat_data[prop] = val
-            
-            # Node tree
-            if mat.use_nodes and mat.node_tree:
-                mat_data['nodes'] = {}
-                
-                for node in mat.node_tree.nodes:
-                    node_data = {}
-                    
-                    # Node properties - check safely
-                    node_props = ['mute', 'hide', 'factor', 'inputs_clear', 'use_clamp', 
-                                 'operation', 'blend_type', 'fac', 'roughness', 'anisotropy', 
-                                 'rotation', 'normal', 'clearcoat', 'clearcoat_roughness', 
-                                 'ior', 'transmission', 'emission_strength']
-                    for prop in node_props:
-                        val = self.safe_get_attr(node, prop)
-                        if val is not None:
-                            node_data[prop] = self.safe_copy_value(val)
-                    
-                    # Input values
-                    if hasattr(node, 'inputs'):
-                        node_data['inputs'] = {}
-                        for i, input_socket in enumerate(node.inputs):
-                            if hasattr(input_socket, 'default_value'):
-                                try:
-                                    node_data['inputs'][i] = self.safe_copy_value(input_socket.default_value)
-                                except:
-                                    pass
-                    
-                    # Output values (some nodes have editable outputs)
-                    if hasattr(node, 'outputs'):
-                        node_data['outputs'] = {}
-                        for i, output_socket in enumerate(node.outputs):
-                            if hasattr(output_socket, 'default_value'):
-                                try:
-                                    node_data['outputs'][i] = self.safe_copy_value(output_socket.default_value)
-                                except:
-                                    pass
-                    
-                    # ColorRamp elements
-                    if hasattr(node, 'color_ramp') and node.color_ramp:
-                        try:
-                            node_data['color_ramp'] = {'elements': {}}
-                            for i, element in enumerate(node.color_ramp.elements):
-                                node_data['color_ramp']['elements'][i] = {
-                                    'position': element.position,
-                                    'color': self.safe_copy_value(element.color)
-                                }
-                        except:
-                            pass
-                    
-                    mat_data['nodes'][node.name] = node_data
-            
-            # Custom properties
-            mat_data['custom_props'] = {}
-            for key in mat.keys():
-                mat_data['custom_props'][key] = self.safe_copy_value(mat[key])
-            
-            self._initial_state[f"materials.{mat.name}"] = mat_data
-        
-        # Monitor scenes
-        for scene in bpy.data.scenes:
-            scene_data = {}
-            
-            # Frame properties
-            scene_data['frame_current'] = scene.frame_current
-            scene_data['frame_start'] = scene.frame_start
-            scene_data['frame_end'] = scene.frame_end
-            scene_data['frame_step'] = scene.frame_step
-            
-            # Physics properties
-            scene_data['use_gravity'] = scene.use_gravity
-            scene_data['gravity'] = self.safe_copy_value(scene.gravity)
-            
-            # Render properties
-            scene_data['render'] = {}
-            render_props = ['resolution_x', 'resolution_y', 'resolution_percentage', 'fps', 'fps_base']
-            for prop in render_props:
-                val = self.safe_get_attr(scene.render, prop)
-                if val is not None:
-                    scene_data['render'][prop] = val
-            
-            # Render engine properties
-            if hasattr(scene, 'eevee'):
-                eevee_props = ['taa_samples', 'taa_render_samples', 'use_taa_reprojection', 
-                              'use_ssr', 'use_ssr_refraction', 'use_bloom', 'use_motion_blur',
-                              'motion_blur_shutter', 'bloom_threshold', 'bloom_knee', 'bloom_radius']
-                scene_data['eevee'] = {}
-                for prop in eevee_props:
-                    val = self.safe_get_attr(scene.eevee, prop)
-                    if val is not None:
-                        scene_data['eevee'][prop] = val
-            
-            if hasattr(scene, 'cycles'):
-                cycles_props = ['samples', 'preview_samples', 'use_denoising', 'denoiser',
-                               'max_bounces', 'diffuse_bounces', 'glossy_bounces', 'transmission_bounces']
-                scene_data['cycles'] = {}
-                for prop in cycles_props:
-                    val = self.safe_get_attr(scene.cycles, prop)
-                    if val is not None:
-                        scene_data['cycles'][prop] = val
-            
-            # World properties
-            if scene.world:
-                scene_data['world'] = {
-                    'use_nodes': scene.world.use_nodes,
-                    'color': self.safe_copy_value(scene.world.color)
-                }
-                
-                # World node tree
-                if scene.world.use_nodes and scene.world.node_tree:
-                    scene_data['world']['nodes'] = {}
-                    for node in scene.world.node_tree.nodes:
-                        node_data = {}
-                        if hasattr(node, 'inputs'):
-                            node_data['inputs'] = {}
-                            for i, input_socket in enumerate(node.inputs):
-                                if hasattr(input_socket, 'default_value'):
-                                    try:
-                                        node_data['inputs'][i] = self.safe_copy_value(input_socket.default_value)
-                                    except:
-                                        pass
-                        scene_data['world']['nodes'][node.name] = node_data
-            
-            self._initial_state[f"scenes.{scene.name}"] = scene_data
-
-    def detect_changes(self, context):
-        """Detect what property has changed and return its data path"""
-        
-        # Check objects
-        for obj in context.view_layer.objects:
-            obj_key = f"objects.{obj.name}"
-            if obj_key not in self._initial_state:
-                continue
-                
-            initial_obj = self._initial_state[obj_key]
-            
-            # Basic properties
-            basic_props = ['location', 'rotation_euler', 'rotation_quaternion', 'scale', 
-                          'hide_viewport', 'hide_render', 'hide_select']
-            for prop in basic_props:
-                if prop in initial_obj:
-                    current_val = getattr(obj, prop)
-                    if not self.values_equal(current_val, initial_obj[prop]):
-                        # Check for array index
-                        if hasattr(current_val, '__len__') and not isinstance(current_val, str):
-                            for i, (curr, init) in enumerate(zip(current_val, initial_obj[prop])):
-                                if not self.values_equal(curr, init):
-                                    return f'bpy.data.objects["{obj.name}"].{prop}[{i}]'
-                        return f'bpy.data.objects["{obj.name}"].{prop}'
-            
-            # Display properties
-            if 'display' in initial_obj and hasattr(obj, 'display'):
-                for prop, initial_val in initial_obj['display'].items():
-                    current_val = self.safe_get_attr(obj.display, prop)
-                    if current_val is not None and current_val != initial_val:
-                        return f'bpy.data.objects["{obj.name}"].display.{prop}'
-            
-            # Collision properties
-            if 'collision' in initial_obj and hasattr(obj, 'collision') and obj.collision:
-                for prop, initial_val in initial_obj['collision'].items():
-                    current_val = self.safe_get_attr(obj.collision, prop)
-                    if current_val is not None and not self.values_equal(current_val, initial_val):
-                        return f'bpy.data.objects["{obj.name}"].collision.{prop}'
-            
-            # Rigid body properties
-            if 'rigid_body' in initial_obj and hasattr(obj, 'rigid_body') and obj.rigid_body:
-                for prop, initial_val in initial_obj['rigid_body'].items():
-                    current_val = self.safe_get_attr(obj.rigid_body, prop)
-                    if current_val is not None and not self.values_equal(current_val, initial_val):
-                        return f'bpy.data.objects["{obj.name}"].rigid_body.{prop}'
-            
-            # Constraints
-            if 'constraints' in initial_obj and obj.constraints:
-                for constraint in obj.constraints:
-                    if constraint.name in initial_obj['constraints']:
-                        initial_const = initial_obj['constraints'][constraint.name]
-                        
-                        for prop, initial_val in initial_const.items():
-                            current_val = self.safe_get_attr(constraint, prop)
-                            if current_val is not None and not self.values_equal(current_val, initial_val):
-                                return f'bpy.data.objects["{obj.name}"].constraints["{constraint.name}"].{prop}'
-            
-            # Pose bones
-            if 'pose_bones' in initial_obj and obj.type == 'ARMATURE' and obj.pose:
-                for pose_bone in obj.pose.bones:
-                    if pose_bone.name in initial_obj['pose_bones']:
-                        initial_pose_bone = initial_obj['pose_bones'][pose_bone.name]
-                        
-                        # Transform properties
-                        transform_props = ['location', 'rotation_euler', 'rotation_quaternion', 'scale',
-                                         'lock_location', 'lock_rotation', 'lock_scale']
-                        for prop in transform_props:
-                            if prop in initial_pose_bone:
-                                current_val = getattr(pose_bone, prop)
-                                if not self.values_equal(current_val, initial_pose_bone[prop]):
-                                    # Check for array index
-                                    if hasattr(current_val, '__len__') and not isinstance(current_val, str):
-                                        for i, (curr, init) in enumerate(zip(current_val, initial_pose_bone[prop])):
-                                            if not self.values_equal(curr, init):
-                                                return f'bpy.data.objects["{obj.name}"].pose.bones["{pose_bone.name}"].{prop}[{i}]'
-                                    return f'bpy.data.objects["{obj.name}"].pose.bones["{pose_bone.name}"].{prop}'
-                        
-                        # Constraints
-                        if 'constraints' in initial_pose_bone and pose_bone.constraints:
-                            for constraint in pose_bone.constraints:
-                                if constraint.name in initial_pose_bone['constraints']:
-                                    initial_const = initial_pose_bone['constraints'][constraint.name]
-                                    
-                                    for prop, initial_val in initial_const.items():
-                                        current_val = self.safe_get_attr(constraint, prop)
-                                        if current_val is not None and not self.values_equal(current_val, initial_val):
-                                            return f'bpy.data.objects["{obj.name}"].pose.bones["{pose_bone.name}"].constraints["{constraint.name}"].{prop}'
-            
-            # Shape keys
-            if 'shape_keys' in initial_obj and obj.data and hasattr(obj.data, 'shape_keys') and obj.data.shape_keys:
-                for key_block in obj.data.shape_keys.key_blocks:
-                    if key_block.name in initial_obj['shape_keys']:
-                        initial_key = initial_obj['shape_keys'][key_block.name]
-                        
-                        for prop, initial_val in initial_key.items():
-                            current_val = getattr(key_block, prop)
-                            if not self.values_equal(current_val, initial_val):
-                                return f'bpy.data.objects["{obj.name}"].data.shape_keys.key_blocks["{key_block.name}"].{prop}'
-            
-            # Modifiers
-            if 'modifiers' in initial_obj and obj.modifiers:
-                for modifier in obj.modifiers:
-                    if modifier.name in initial_obj['modifiers']:
-                        initial_mod = initial_obj['modifiers'][modifier.name]
-                        
-                        for prop, initial_val in initial_mod.items():
-                            current_val = self.safe_get_attr(modifier, prop)
-                            if current_val is not None and not self.values_equal(current_val, initial_val):
-                                return f'bpy.data.objects["{obj.name}"].modifiers["{modifier.name}"].{prop}'
-            
-            # Custom properties
-            if 'custom_props' in initial_obj:
-                for key, initial_val in initial_obj['custom_props'].items():
-                    if key in obj:
-                        current_val = obj[key]
-                        if not self.values_equal(current_val, initial_val):
-                            return f'bpy.data.objects["{obj.name}"]["{key}"]'
-        
-        # Check cameras
-        for camera in bpy.data.cameras:
-            cam_key = f"cameras.{camera.name}"
-            if cam_key not in self._initial_state:
-                continue
-                
-            initial_cam = self._initial_state[cam_key]
-            
-            # Basic camera properties
-            cam_props = ['lens', 'sensor_width', 'sensor_height', 'clip_start', 'clip_end', 
-                        'type', 'ortho_scale', 'shift_x', 'shift_y']
-            for prop in cam_props:
-                if prop in initial_cam:
-                    current_val = getattr(camera, prop)
-                    if not self.values_equal(current_val, initial_cam[prop]):
-                        return f'bpy.data.cameras["{camera.name}"].{prop}'
-            
-            # DOF properties
-            if 'dof' in initial_cam and hasattr(camera, 'dof'):
-                for prop, initial_val in initial_cam['dof'].items():
-                    current_val = self.safe_get_attr(camera.dof, prop)
-                    if current_val is not None and not self.values_equal(current_val, initial_val):
-                        return f'bpy.data.cameras["{camera.name}"].dof.{prop}'
-            
-            # Custom properties
-            if 'custom_props' in initial_cam:
-                for key, initial_val in initial_cam['custom_props'].items():
-                    if key in camera:
-                        current_val = camera[key]
-                        if not self.values_equal(current_val, initial_val):
-                            return f'bpy.data.cameras["{camera.name}"]["{key}"]'
-        
-        # Check lights
-        for light in bpy.data.lights:
-            light_key = f"lights.{light.name}"
-            if light_key not in self._initial_state:
-                continue
-                
-            initial_light = self._initial_state[light_key]
-            
-            # Basic light properties
-            light_props = ['type', 'energy', 'color', 'use_shadow', 'shadow_soft_size', 
-                          'cutoff_distance', 'use_custom_distance', 'angle', 'spot_size', 
-                          'spot_blend', 'size', 'size_y', 'shape']
-            for prop in light_props:
-                if prop in initial_light:
-                    current_val = getattr(light, prop)
-                    if not self.values_equal(current_val, initial_light[prop]):
-                        # Check for array index (like color)
-                        if hasattr(current_val, '__len__') and not isinstance(current_val, str):
-                            for i, (curr, init) in enumerate(zip(current_val, initial_light[prop])):
-                                if not self.values_equal(curr, init):
-                                    return f'bpy.data.lights["{light.name}"].{prop}[{i}]'
-                        return f'bpy.data.lights["{light.name}"].{prop}'
-            
-            # Custom properties
-            if 'custom_props' in initial_light:
-                for key, initial_val in initial_light['custom_props'].items():
-                    if key in light:
-                        current_val = light[key]
-                        if not self.values_equal(current_val, initial_val):
-                            return f'bpy.data.lights["{light.name}"]["{key}"]'
-        
-        # Check armatures
-        for armature in bpy.data.armatures:
-            arm_key = f"armatures.{armature.name}"
-            if arm_key not in self._initial_state:
-                continue
-                
-            initial_arm = self._initial_state[arm_key]
-            
-            # Armature display properties
-            arm_props = ['show_bone_custom_shapes', 'show_names', 'show_axes', 'display_type']
-            for prop in arm_props:
-                if prop in initial_arm:
-                    current_val = self.safe_get_attr(armature, prop)
-                    if current_val is not None and current_val != initial_arm[prop]:
-                        return f'bpy.data.armatures["{armature.name}"].{prop}'
-            
-            # Bone collections visibility
-            if 'collections' in initial_arm:
-                for collection_name, initial_collection in initial_arm['collections'].items():
-                    attr_name = initial_collection.get('attr_name', 'collections_all')
-                    
-                    if hasattr(armature, attr_name):
-                        try:
-                            collections = getattr(armature, attr_name)
-                            for collection in collections:
-                                if collection.name == collection_name:
-                                    if collection.is_visible != initial_collection['is_visible']:
-                                        return f'bpy.data.armatures["{armature.name}"].{attr_name}["{collection_name}"].is_visible'
-                                    break
-                        except:
-                            pass
-            
-            # Bone properties
-            if 'bones' in initial_arm:
-                for bone in armature.bones:
-                    if bone.name in initial_arm['bones']:
-                        initial_bone = initial_arm['bones'][bone.name]
-                        
-                        for prop, initial_val in initial_bone.items():
-                            current_val = self.safe_get_attr(bone, prop)
-                            if current_val is not None and not self.values_equal(current_val, initial_val):
-                                return f'bpy.data.armatures["{armature.name}"].bones["{bone.name}"].{prop}'
-            
-            # Custom properties
-            if 'custom_props' in initial_arm:
-                for key, initial_val in initial_arm['custom_props'].items():
-                    if key in armature:
-                        current_val = armature[key]
-                        if not self.values_equal(current_val, initial_val):
-                            return f'bpy.data.armatures["{armature.name}"]["{key}"]'
-        
-        # Check materials
-        for mat in bpy.data.materials:
-            mat_key = f"materials.{mat.name}"
-            if mat_key not in self._initial_state:
-                continue
-                
-            initial_mat = self._initial_state[mat_key]
-            
-            # Basic material properties
-            for prop, initial_val in initial_mat.items():
-                if prop in ['nodes', 'custom_props']:
-                    continue
-                    
-                current_val = self.safe_get_attr(mat, prop)
-                if current_val is not None and current_val != initial_val:
-                    return f'bpy.data.materials["{mat.name}"].{prop}'
-            
-            # Node tree
-            if 'nodes' in initial_mat and mat.use_nodes and mat.node_tree:
-                for node in mat.node_tree.nodes:
-                    if node.name in initial_mat['nodes']:
-                        initial_node = initial_mat['nodes'][node.name]
-                        
-                        # Node properties
-                        for prop, initial_val in initial_node.items():
-                            if prop in ['inputs', 'outputs', 'color_ramp']:
-                                continue
-                                
-                            current_val = self.safe_get_attr(node, prop)
-                            if current_val is not None and not self.values_equal(current_val, initial_val):
-                                return f'bpy.data.materials["{mat.name}"].node_tree.nodes["{node.name}"].{prop}'
-                        
-                        # Input values
-                        if 'inputs' in initial_node and hasattr(node, 'inputs'):
-                            for i, input_socket in enumerate(node.inputs):
-                                if i in initial_node['inputs'] and hasattr(input_socket, 'default_value'):
-                                    try:
-                                        current_val = input_socket.default_value
-                                        initial_val = initial_node['inputs'][i]
-                                        
-                                        if not self.values_equal(current_val, initial_val):
-                                            # Check for array index (like color or vector inputs)
-                                            if hasattr(current_val, '__len__') and not isinstance(current_val, str):
-                                                for j, (curr, init) in enumerate(zip(current_val, initial_val)):
-                                                    if not self.values_equal(curr, init):
-                                                        return f'bpy.data.materials["{mat.name}"].node_tree.nodes["{node.name}"].inputs[{i}].default_value[{j}]'
-                                            return f'bpy.data.materials["{mat.name}"].node_tree.nodes["{node.name}"].inputs[{i}].default_value'
-                                    except:
-                                        pass
-                        
-                        # Output values
-                        if 'outputs' in initial_node and hasattr(node, 'outputs'):
-                            for i, output_socket in enumerate(node.outputs):
-                                if i in initial_node['outputs'] and hasattr(output_socket, 'default_value'):
-                                    try:
-                                        current_val = output_socket.default_value
-                                        initial_val = initial_node['outputs'][i]
-                                        
-                                        if not self.values_equal(current_val, initial_val):
-                                            # Check for array index
-                                            if hasattr(current_val, '__len__') and not isinstance(current_val, str):
-                                                for j, (curr, init) in enumerate(zip(current_val, initial_val)):
-                                                    if not self.values_equal(curr, init):
-                                                        return f'bpy.data.materials["{mat.name}"].node_tree.nodes["{node.name}"].outputs[{i}].default_value[{j}]'
-                                            return f'bpy.data.materials["{mat.name}"].node_tree.nodes["{node.name}"].outputs[{i}].default_value'
-                                    except:
-                                        pass
-                        
-                        # ColorRamp elements
-                        if 'color_ramp' in initial_node and hasattr(node, 'color_ramp') and node.color_ramp:
-                            if 'elements' in initial_node['color_ramp']:
-                                try:
-                                    for i, element in enumerate(node.color_ramp.elements):
-                                        if i in initial_node['color_ramp']['elements']:
-                                            initial_element = initial_node['color_ramp']['elements'][i]
-                                            
-                                            # Position
-                                            if 'position' in initial_element:
-                                                if not self.values_equal(element.position, initial_element['position']):
-                                                    return f'bpy.data.materials["{mat.name}"].node_tree.nodes["{node.name}"].color_ramp.elements[{i}].position'
-                                            
-                                            # Color
-                                            if 'color' in initial_element:
-                                                if not self.values_equal(element.color, initial_element['color']):
-                                                    # Check individual color components
-                                                    for j, (curr, init) in enumerate(zip(element.color, initial_element['color'])):
-                                                        if not self.values_equal(curr, init):
-                                                            return f'bpy.data.materials["{mat.name}"].node_tree.nodes["{node.name}"].color_ramp.elements[{i}].color[{j}]'
-                                                    return f'bpy.data.materials["{mat.name}"].node_tree.nodes["{node.name}"].color_ramp.elements[{i}].color'
-                                except:
-                                    pass
-            
-            # Custom properties
-            if 'custom_props' in initial_mat:
-                for key, initial_val in initial_mat['custom_props'].items():
-                    if key in mat:
-                        current_val = mat[key]
-                        if not self.values_equal(current_val, initial_val):
-                            return f'bpy.data.materials["{mat.name}"]["{key}"]'
-        
-        # Check scenes
-        for scene in bpy.data.scenes:
-            scene_key = f"scenes.{scene.name}"
-            if scene_key not in self._initial_state:
-                continue
-                
-            initial_scene = self._initial_state[scene_key]
-            
-            # Basic scene properties
-            basic_props = ['frame_current', 'frame_start', 'frame_end', 'frame_step', 'use_gravity']
-            for prop in basic_props:
-                if prop in initial_scene:
-                    current_val = getattr(scene, prop)
-                    if not self.values_equal(current_val, initial_scene[prop]):
-                        return f'bpy.data.scenes["{scene.name}"].{prop}'
-            
-            # Gravity vector
-            if 'gravity' in initial_scene:
-                if not self.values_equal(scene.gravity, initial_scene['gravity']):
-                    # Check individual components
-                    for i, (current, initial) in enumerate(zip(scene.gravity, initial_scene['gravity'])):
-                        if not self.values_equal(current, initial):
-                            return f'bpy.data.scenes["{scene.name}"].gravity[{i}]'
-            
-            # Render properties
-            if 'render' in initial_scene and hasattr(scene, 'render'):
-                for prop, initial_val in initial_scene['render'].items():
-                    current_val = self.safe_get_attr(scene.render, prop)
-                    if current_val is not None and not self.values_equal(current_val, initial_val):
-                        return f'bpy.data.scenes["{scene.name}"].render.{prop}'
-            
-            # EEVEE properties
-            if 'eevee' in initial_scene and hasattr(scene, 'eevee'):
-                for prop, initial_val in initial_scene['eevee'].items():
-                    current_val = self.safe_get_attr(scene.eevee, prop)
-                    if current_val is not None and not self.values_equal(current_val, initial_val):
-                        return f'bpy.data.scenes["{scene.name}"].eevee.{prop}'
-            
-            # Cycles properties
-            if 'cycles' in initial_scene and hasattr(scene, 'cycles'):
-                for prop, initial_val in initial_scene['cycles'].items():
-                    current_val = self.safe_get_attr(scene.cycles, prop)
-                    if current_val is not None and not self.values_equal(current_val, initial_val):
-                        return f'bpy.data.scenes["{scene.name}"].cycles.{prop}'
-            
-            # World properties
-            if 'world' in initial_scene and scene.world:
-                world_props = ['use_nodes', 'color']
-                for prop in world_props:
-                    if prop in initial_scene['world']:
-                        current_val = getattr(scene.world, prop)
-                        if not self.values_equal(current_val, initial_scene['world'][prop]):
-                            # Check for array index (like color)
-                            if hasattr(current_val, '__len__') and not isinstance(current_val, str):
-                                for i, (curr, init) in enumerate(zip(current_val, initial_scene['world'][prop])):
-                                    if not self.values_equal(curr, init):
-                                        return f'bpy.data.worlds["{scene.world.name}"].{prop}[{i}]'
-                            return f'bpy.data.worlds["{scene.world.name}"].{prop}'
-                
-                # World node tree
-                if 'nodes' in initial_scene['world'] and scene.world.use_nodes and scene.world.node_tree:
-                    for node in scene.world.node_tree.nodes:
-                        if node.name in initial_scene['world']['nodes']:
-                            initial_node = initial_scene['world']['nodes'][node.name]
-                            
-                            # Input values
-                            if 'inputs' in initial_node and hasattr(node, 'inputs'):
-                                for i, input_socket in enumerate(node.inputs):
-                                    if i in initial_node['inputs'] and hasattr(input_socket, 'default_value'):
-                                        try:
-                                            current_val = input_socket.default_value
-                                            initial_val = initial_node['inputs'][i]
-                                            
-                                            if not self.values_equal(current_val, initial_val):
-                                                # Check for array index
-                                                if hasattr(current_val, '__len__') and not isinstance(current_val, str):
-                                                    for j, (curr, init) in enumerate(zip(current_val, initial_val)):
-                                                        if not self.values_equal(curr, init):
-                                                            return f'bpy.data.worlds["{scene.world.name}"].node_tree.nodes["{node.name}"].inputs[{i}].default_value[{j}]'
-                                                return f'bpy.data.worlds["{scene.world.name}"].node_tree.nodes["{node.name}"].inputs[{i}].default_value'
-                                        except:
-                                            pass
         
         return None
 
@@ -2990,6 +2116,936 @@ class SCENE_OT_validate_path(bpy.types.Operator):
         
         return {'FINISHED'}
 
+
+
+class ANIM_OT_path_eyedropper(bpy.types.Operator):
+    """Eyedropper tool to capture property data paths by detecting changes"""
+    bl_idname = "anim.path_eyedropper"
+    bl_label = "Path Eyedropper"
+    bl_description = "Click and change any property to capture its data path"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    _timer = None
+    _initial_state = {}
+    
+    def modal(self, context, event):
+        if event.type == 'ESC':
+            self.cancel(context)
+            return {'CANCELLED'}
+        if event.type == 'TIMER':
+            # Check for changes
+            detected_path = self.detect_changes(context)
+            if detected_path:
+                # Set the detected path
+                props = context.scene.driver_recorder_props
+                props.custom_path_input = detected_path
+                
+                self.report({'INFO'}, f"Captured path: {detected_path}")
+                self.finish(context)
+                return {'FINISHED'}
+        return {'PASS_THROUGH'}
+    
+    def ignore(self, key):
+        """Check if a custom property should be ignored"""
+        # BlenderKit properties
+        blenderkit_props = {
+            'scatter1', 'scatter2', 'scatter3', 'scatter4', 'scatter5',
+            'scattered', 'asset_id', 'asset_index', 'asset_data',
+            'blenderkit', 'bkit_ratings', 'bkit_comments'
+        }
+        
+        # General addon patterns
+        addon_props = {
+            'cycles_visibility', 'locked_shape_key', '_RNA_UI',
+            'cycles', 'eevee', 'workbench'
+        }
+        
+        # Check exact matches
+        if key in blenderkit_props or key in addon_props:
+            return True
+        
+        # Check patterns (properties that start with certain prefixes)
+        ignore_prefixes = ['bkit_', 'blenderkit_', '_', 'cycles_', 'eevee_', 'workbench_']
+        if any(key.startswith(prefix) for prefix in ignore_prefixes):
+            return True
+        
+        # Check patterns (properties that end with certain suffixes)
+        ignore_suffixes = ['_data', '_cache', '_temp', '_internal']
+        if any(key.endswith(suffix) for suffix in ignore_suffixes):
+            return True
+        
+        return False
+
+    def invoke(self, context, event):
+        # Set listening state
+        props = context.scene.driver_recorder_props
+        props.path_eyedropper_active = True
+        
+        # Store initial state
+        self.capture_initial_state(context)
+        
+        # Add timer
+        wm = context.window_manager
+        self._timer = wm.event_timer_add(0.1, window=context.window)
+        wm.modal_handler_add(self)
+        
+        self.report({'INFO'}, "Eyedropper active - change any property to capture its path")
+        return {'RUNNING_MODAL'}
+    
+    def cancel(self, context):
+        self.finish(context)
+    
+    def finish(self, context):
+        # Clean up
+        props = context.scene.driver_recorder_props
+        props.path_eyedropper_active = False
+        
+        if self._timer:
+            wm = context.window_manager
+            wm.event_timer_remove(self._timer)
+            self._timer = None
+        
+        # Clear state
+        self._initial_state.clear()
+    
+    def safe_copy_value(self, value):
+        """Safely copy a value, handling different types"""
+        try:
+            if hasattr(value, 'copy'):
+                return value.copy()
+            elif hasattr(value, '__len__') and not isinstance(value, str):
+                return list(value)
+            else:
+                return value
+        except:
+            return value
+    
+    def safe_get_attr(self, obj, attr, default=None):
+        """Safely get an attribute, returning default if it doesn't exist"""
+        try:
+            if hasattr(obj, attr):
+                return getattr(obj, attr)
+            return default
+        except:
+            return default
+    
+    def values_equal(self, val1, val2, tolerance=0.001):
+        """Compare two values with tolerance for floats"""
+        try:
+            if hasattr(val1, '__len__') and hasattr(val2, '__len__') and not isinstance(val1, str):
+                if len(val1) != len(val2):
+                    return False
+                return all(abs(a - b) <= tolerance for a, b in zip(val1, val2))
+            elif isinstance(val1, float) or isinstance(val2, float):
+                return abs(val1 - val2) <= tolerance
+            else:
+                return val1 == val2
+        except:
+            return val1 == val2
+    
+    def capture_initial_state(self, context):
+        """Capture initial state of various properties"""
+        self._initial_state.clear()
+        
+        # Monitor all objects
+        for obj in context.view_layer.objects:
+            obj_data = {}
+            
+            # Basic object properties
+            obj_data['location'] = self.safe_copy_value(obj.location)
+            obj_data['rotation_euler'] = self.safe_copy_value(obj.rotation_euler)
+            obj_data['rotation_quaternion'] = self.safe_copy_value(obj.rotation_quaternion)
+            obj_data['scale'] = self.safe_copy_value(obj.scale)
+            obj_data['hide_viewport'] = obj.hide_viewport
+            obj_data['hide_render'] = obj.hide_render
+            obj_data['hide_select'] = obj.hide_select
+            
+            # Display properties
+            if hasattr(obj, 'display'):
+                display_props = ['show_shadows', 'show_in_front', 'show_wire', 'show_all_edges', 
+                               'show_transparent', 'show_only_shape_key', 'show_bounds']
+                obj_data['display'] = {}
+                for prop in display_props:
+                    val = self.safe_get_attr(obj.display, prop)
+                    if val is not None:
+                        obj_data['display'][prop] = val
+            
+            # Collision properties
+            if hasattr(obj, 'collision') and obj.collision:
+                collision_props = ['absorption', 'damping_factor', 'damping_random', 'friction_factor', 
+                                 'friction_random', 'permeability', 'stickiness', 'thickness_inner', 
+                                 'thickness_outer', 'use']
+                obj_data['collision'] = {}
+                for prop in collision_props:
+                    val = self.safe_get_attr(obj.collision, prop)
+                    if val is not None:
+                        obj_data['collision'][prop] = self.safe_copy_value(val)
+            
+            # Rigid body properties
+            if hasattr(obj, 'rigid_body') and obj.rigid_body:
+                rb_props = ['mass', 'friction', 'restitution', 'linear_damping', 'angular_damping', 
+                           'use_margin', 'collision_margin', 'kinematic', 'enabled']
+                obj_data['rigid_body'] = {}
+                for prop in rb_props:
+                    val = self.safe_get_attr(obj.rigid_body, prop)
+                    if val is not None:
+                        obj_data['rigid_body'][prop] = self.safe_copy_value(val)
+            
+            # Constraints
+            if obj.constraints:
+                obj_data['constraints'] = {}
+                for constraint in obj.constraints:
+                    const_data = {
+                        'influence': constraint.influence,
+                        'mute': constraint.mute
+                    }
+                    # Add constraint-specific properties safely
+                    constraint_props = ['target', 'subtarget', 'use_x', 'use_y', 'use_z']
+                    for prop in constraint_props:
+                        val = self.safe_get_attr(constraint, prop)
+                        if val is not None:
+                            const_data[prop] = val
+                    obj_data['constraints'][constraint.name] = const_data
+            
+            # Pose bones (for armatures)
+            if obj.type == 'ARMATURE' and obj.pose:
+                obj_data['pose_bones'] = {}
+                for pose_bone in obj.pose.bones:
+                    pose_bone_data = {
+                        'location': self.safe_copy_value(pose_bone.location),
+                        'rotation_euler': self.safe_copy_value(pose_bone.rotation_euler),
+                        'rotation_quaternion': self.safe_copy_value(pose_bone.rotation_quaternion),
+                        'scale': self.safe_copy_value(pose_bone.scale),
+                        'lock_location': self.safe_copy_value(pose_bone.lock_location),
+                        'lock_rotation': self.safe_copy_value(pose_bone.lock_rotation),
+                        'lock_scale': self.safe_copy_value(pose_bone.lock_scale)
+                    }
+                    
+                    # Pose bone constraints
+                    if pose_bone.constraints:
+                        pose_bone_data['constraints'] = {}
+                        for constraint in pose_bone.constraints:
+                            const_data = {
+                                'influence': constraint.influence,
+                                'mute': constraint.mute
+                            }
+                            pose_bone_data['constraints'][constraint.name] = const_data
+                    
+                    obj_data['pose_bones'][pose_bone.name] = pose_bone_data
+            
+            # Shape keys
+            if obj.data and hasattr(obj.data, 'shape_keys') and obj.data.shape_keys:
+                obj_data['shape_keys'] = {}
+                for key_block in obj.data.shape_keys.key_blocks:
+                    obj_data['shape_keys'][key_block.name] = {
+                        'value': key_block.value,
+                        'mute': key_block.mute
+                    }
+            
+            # Modifiers
+            if obj.modifiers:
+                obj_data['modifiers'] = {}
+                for modifier in obj.modifiers:
+                    mod_data = {
+                        'show_viewport': modifier.show_viewport,
+                        'show_render': modifier.show_render
+                    }
+                    
+                    # Common modifier properties
+                    mod_props = ['strength', 'factor', 'offset', 'ratio', 'levels', 'angle_limit', 
+                               'iterations', 'lambda_factor', 'lambda_border', 'use_x', 'use_y', 'use_z',
+                               'width', 'segments', 'profile', 'limit_method', 'use_only_vertices',
+                               'use_limit_to_selection', 'use_smooth', 'use_repeat', 'use_clamp']
+                    for prop in mod_props:
+                        val = self.safe_get_attr(modifier, prop)
+                        if val is not None:
+                            mod_data[prop] = self.safe_copy_value(val)
+                    
+                    obj_data['modifiers'][modifier.name] = mod_data
+            
+            # Custom properties
+            obj_data['custom_props'] = {}
+            for key in obj.keys():
+                if key not in obj.bl_rna.properties.keys() and not self.ignore(key):
+                    obj_data['custom_props'][key] = self.safe_copy_value(obj[key])
+            
+            self._initial_state[f"objects.{obj.name}"] = obj_data
+        
+        # Monitor cameras
+        for camera in bpy.data.cameras:
+            cam_data = {
+                'lens': camera.lens,
+                'sensor_width': camera.sensor_width,
+                'sensor_height': camera.sensor_height,
+                'clip_start': camera.clip_start,
+                'clip_end': camera.clip_end,
+                'type': camera.type,
+                'ortho_scale': camera.ortho_scale,
+                'shift_x': camera.shift_x,
+                'shift_y': camera.shift_y,
+                'dof': {}
+            }
+            
+            # Depth of field properties
+            if hasattr(camera, 'dof'):
+                dof_props = ['use_dof', 'focus_distance', 'aperture_fstop', 'aperture_blades', 'aperture_rotation']
+                for prop in dof_props:
+                    val = self.safe_get_attr(camera.dof, prop)
+                    if val is not None:
+                        cam_data['dof'][prop] = val
+            
+            # Custom properties
+            cam_data['custom_props'] = {}
+            for key in camera.keys():
+                if key not in camera.bl_rna.properties.keys() and not self.ignore(key):
+                    try:
+                        # Skip certain problematic properties
+                        if key in ['cycles', 'eevee', 'workbench']:
+                            continue
+                        cam_data['custom_props'][key] = self.safe_copy_value(camera[key])
+                    except:
+                        pass
+            
+            self._initial_state[f"cameras.{camera.name}"] = cam_data
+        
+        # Monitor lights
+        for light in bpy.data.lights:
+            light_data = {
+                'type': light.type,
+                'energy': light.energy,
+                'color': self.safe_copy_value(light.color),
+                'use_shadow': light.use_shadow,
+                'shadow_soft_size': light.shadow_soft_size,
+                'cutoff_distance': light.cutoff_distance,
+                'use_custom_distance': light.use_custom_distance
+            }
+            
+            # Type-specific properties
+            type_props = ['angle', 'spot_size', 'spot_blend', 'size', 'size_y', 'shape']
+            for prop in type_props:
+                val = self.safe_get_attr(light, prop)
+                if val is not None:
+                    light_data[prop] = val
+            
+            # Custom properties
+            light_data['custom_props'] = {}
+            for key in light.keys():
+                if not self.ignore(key):
+                    light_data['custom_props'][key] = self.safe_copy_value(light[key])
+            
+            self._initial_state[f"lights.{light.name}"] = light_data
+        
+        # Monitor armatures
+        for armature in bpy.data.armatures:
+            arm_data = {}
+            
+            # Armature display properties
+            arm_props = ['show_bone_custom_shapes', 'show_names', 'show_axes', 'display_type']
+            for prop in arm_props:
+                val = self.safe_get_attr(armature, prop)
+                if val is not None:
+                    arm_data[prop] = val
+            
+            # Bone collections visibility
+            arm_data['collections'] = {}
+            collections_attr = None
+            if hasattr(armature, 'collections_all'):
+                collections_attr = 'collections_all'
+            elif hasattr(armature, 'collections'):
+                collections_attr = 'collections'
+            
+            if collections_attr:
+                try:
+                    collections = getattr(armature, collections_attr)
+                    for collection in collections:
+                        arm_data['collections'][collection.name] = {
+                            'is_visible': collection.is_visible,
+                            'attr_name': collections_attr
+                        }
+                except:
+                    pass
+            
+            # Bone properties
+            arm_data['bones'] = {}
+            for bone in armature.bones:
+                bone_props = ['hide_select', 'hide', 'use_deform', 'use_inherit_rotation', 
+                             'use_inherit_scale', 'use_local_location', 'use_relative_parent',
+                             'envelope_distance', 'envelope_weight', 'head_radius', 'tail_radius']
+                bone_data = {}
+                for prop in bone_props:
+                    val = self.safe_get_attr(bone, prop)
+                    if val is not None:
+                        bone_data[prop] = self.safe_copy_value(val)
+                arm_data['bones'][bone.name] = bone_data
+            
+            # Custom properties
+            arm_data['custom_props'] = {}
+            for key in armature.keys():
+                if not self.ignore(key):
+                    arm_data['custom_props'][key] = self.safe_copy_value(armature[key])
+            
+            self._initial_state[f"armatures.{armature.name}"] = arm_data
+        
+        # Monitor materials
+        for mat in bpy.data.materials:
+            mat_data = {}
+            
+            # Basic material properties - check each one safely
+            mat_props = ['use_backface_culling', 'blend_method', 'shadow_method', 'alpha_threshold', 
+                        'use_screen_refraction', 'refraction_depth', 'use_sss_translucency']
+            for prop in mat_props:
+                val = self.safe_get_attr(mat, prop)
+                if val is not None:
+                    mat_data[prop] = val
+            
+            # Node tree
+            if mat.use_nodes and mat.node_tree:
+                mat_data['nodes'] = {}
+                
+                for node in mat.node_tree.nodes:
+                    node_data = {}
+                    
+                    # Node properties - check safely
+                    node_props = ['mute', 'hide', 'factor', 'inputs_clear', 'use_clamp', 
+                                 'operation', 'blend_type', 'fac', 'roughness', 'anisotropy', 
+                                 'rotation', 'normal', 'clearcoat', 'clearcoat_roughness', 
+                                 'ior', 'transmission', 'emission_strength']
+                    for prop in node_props:
+                        val = self.safe_get_attr(node, prop)
+                        if val is not None:
+                            node_data[prop] = self.safe_copy_value(val)
+                    
+                    # Input values
+                    if hasattr(node, 'inputs'):
+                        node_data['inputs'] = {}
+                        for i, input_socket in enumerate(node.inputs):
+                            if hasattr(input_socket, 'default_value'):
+                                try:
+                                    node_data['inputs'][i] = self.safe_copy_value(input_socket.default_value)
+                                except:
+                                    pass
+                    
+                    # Output values (some nodes have editable outputs)
+                    if hasattr(node, 'outputs'):
+                        node_data['outputs'] = {}
+                        for i, output_socket in enumerate(node.outputs):
+                            if hasattr(output_socket, 'default_value'):
+                                try:
+                                    node_data['outputs'][i] = self.safe_copy_value(output_socket.default_value)
+                                except:
+                                    pass
+                    
+                    # ColorRamp elements
+                    if hasattr(node, 'color_ramp') and node.color_ramp:
+                        try:
+                            node_data['color_ramp'] = {'elements': {}}
+                            for i, element in enumerate(node.color_ramp.elements):
+                                node_data['color_ramp']['elements'][i] = {
+                                    'position': element.position,
+                                    'color': self.safe_copy_value(element.color)
+                                }
+                        except:
+                            pass
+                    
+                    mat_data['nodes'][node.name] = node_data
+            
+            # Custom properties
+            mat_data['custom_props'] = {}
+            for key in mat.keys():
+                mat_data['custom_props'][key] = self.safe_copy_value(mat[key])
+            
+            self._initial_state[f"materials.{mat.name}"] = mat_data
+        
+        # Monitor scenes
+        for scene in bpy.data.scenes:
+            scene_data = {}
+            
+            # Frame properties
+            scene_data['frame_current'] = scene.frame_current
+            scene_data['frame_start'] = scene.frame_start
+            scene_data['frame_end'] = scene.frame_end
+            scene_data['frame_step'] = scene.frame_step
+            
+            # Physics properties
+            scene_data['use_gravity'] = scene.use_gravity
+            scene_data['gravity'] = self.safe_copy_value(scene.gravity)
+            
+            # Render properties
+            scene_data['render'] = {}
+            render_props = ['resolution_x', 'resolution_y', 'resolution_percentage', 'fps', 'fps_base']
+            for prop in render_props:
+                val = self.safe_get_attr(scene.render, prop)
+                if val is not None:
+                    scene_data['render'][prop] = val
+            
+            # Render engine properties
+            if hasattr(scene, 'eevee'):
+                eevee_props = ['taa_samples', 'taa_render_samples', 'use_taa_reprojection', 
+                              'use_ssr', 'use_ssr_refraction', 'use_bloom', 'use_motion_blur',
+                              'motion_blur_shutter', 'bloom_threshold', 'bloom_knee', 'bloom_radius']
+                scene_data['eevee'] = {}
+                for prop in eevee_props:
+                    val = self.safe_get_attr(scene.eevee, prop)
+                    if val is not None:
+                        scene_data['eevee'][prop] = val
+            
+            if hasattr(scene, 'cycles'):
+                cycles_props = ['samples', 'preview_samples', 'use_denoising', 'denoiser',
+                               'max_bounces', 'diffuse_bounces', 'glossy_bounces', 'transmission_bounces']
+                scene_data['cycles'] = {}
+                for prop in cycles_props:
+                    val = self.safe_get_attr(scene.cycles, prop)
+                    if val is not None:
+                        scene_data['cycles'][prop] = val
+            
+            # World properties
+            if scene.world:
+                scene_data['world'] = {
+                    'use_nodes': scene.world.use_nodes,
+                    'color': self.safe_copy_value(scene.world.color)
+                }
+                
+                # World node tree
+                if scene.world.use_nodes and scene.world.node_tree:
+                    scene_data['world']['nodes'] = {}
+                    for node in scene.world.node_tree.nodes:
+                        node_data = {}
+                        if hasattr(node, 'inputs'):
+                            node_data['inputs'] = {}
+                            for i, input_socket in enumerate(node.inputs):
+                                if hasattr(input_socket, 'default_value'):
+                                    try:
+                                        node_data['inputs'][i] = self.safe_copy_value(input_socket.default_value)
+                                    except:
+                                        pass
+                        scene_data['world']['nodes'][node.name] = node_data
+            
+            self._initial_state[f"scenes.{scene.name}"] = scene_data
+
+    def detect_changes(self, context):
+        """Detect what property has changed and return its data path"""
+        
+        # Check objects
+        for obj in context.view_layer.objects:
+            obj_key = f"objects.{obj.name}"
+            if obj_key not in self._initial_state:
+                continue
+                
+            initial_obj = self._initial_state[obj_key]
+            
+            # Basic properties
+            basic_props = ['location', 'rotation_euler', 'rotation_quaternion', 'scale', 
+                          'hide_viewport', 'hide_render', 'hide_select']
+            for prop in basic_props:
+                if prop in initial_obj:
+                    current_val = getattr(obj, prop)
+                    if not self.values_equal(current_val, initial_obj[prop]):
+                        # Check for array index
+                        if hasattr(current_val, '__len__') and not isinstance(current_val, str):
+                            for i, (curr, init) in enumerate(zip(current_val, initial_obj[prop])):
+                                if not self.values_equal(curr, init):
+                                    return f'bpy.data.objects["{obj.name}"].{prop}[{i}]'
+                        return f'bpy.data.objects["{obj.name}"].{prop}'
+            
+            # Display properties
+            if 'display' in initial_obj and hasattr(obj, 'display'):
+                for prop, initial_val in initial_obj['display'].items():
+                    current_val = self.safe_get_attr(obj.display, prop)
+                    if current_val is not None and current_val != initial_val:
+                        return f'bpy.data.objects["{obj.name}"].display.{prop}'
+            
+            # Collision properties
+            if 'collision' in initial_obj and hasattr(obj, 'collision') and obj.collision:
+                for prop, initial_val in initial_obj['collision'].items():
+                    current_val = self.safe_get_attr(obj.collision, prop)
+                    if current_val is not None and not self.values_equal(current_val, initial_val):
+                        return f'bpy.data.objects["{obj.name}"].collision.{prop}'
+            
+            # Rigid body properties
+            if 'rigid_body' in initial_obj and hasattr(obj, 'rigid_body') and obj.rigid_body:
+                for prop, initial_val in initial_obj['rigid_body'].items():
+                    current_val = self.safe_get_attr(obj.rigid_body, prop)
+                    if current_val is not None and not self.values_equal(current_val, initial_val):
+                        return f'bpy.data.objects["{obj.name}"].rigid_body.{prop}'
+            
+            # Constraints
+            if 'constraints' in initial_obj and obj.constraints:
+                for constraint in obj.constraints:
+                    if constraint.name in initial_obj['constraints']:
+                        initial_const = initial_obj['constraints'][constraint.name]
+                        
+                        for prop, initial_val in initial_const.items():
+                            current_val = self.safe_get_attr(constraint, prop)
+                            if current_val is not None and not self.values_equal(current_val, initial_val):
+                                return f'bpy.data.objects["{obj.name}"].constraints["{constraint.name}"].{prop}'
+            
+            # Pose bones
+            if 'pose_bones' in initial_obj and obj.type == 'ARMATURE' and obj.pose:
+                for pose_bone in obj.pose.bones:
+                    if pose_bone.name in initial_obj['pose_bones']:
+                        initial_pose_bone = initial_obj['pose_bones'][pose_bone.name]
+                        
+                        # Transform properties
+                        transform_props = ['location', 'rotation_euler', 'rotation_quaternion', 'scale',
+                                         'lock_location', 'lock_rotation', 'lock_scale']
+                        for prop in transform_props:
+                            if prop in initial_pose_bone:
+                                current_val = getattr(pose_bone, prop)
+                                if not self.values_equal(current_val, initial_pose_bone[prop]):
+                                    # Check for array index
+                                    if hasattr(current_val, '__len__') and not isinstance(current_val, str):
+                                        for i, (curr, init) in enumerate(zip(current_val, initial_pose_bone[prop])):
+                                            if not self.values_equal(curr, init):
+                                                return f'bpy.data.objects["{obj.name}"].pose.bones["{pose_bone.name}"].{prop}[{i}]'
+                                    return f'bpy.data.objects["{obj.name}"].pose.bones["{pose_bone.name}"].{prop}'
+                        
+                        # Constraints
+                        if 'constraints' in initial_pose_bone and pose_bone.constraints:
+                            for constraint in pose_bone.constraints:
+                                if constraint.name in initial_pose_bone['constraints']:
+                                    initial_const = initial_pose_bone['constraints'][constraint.name]
+                                    
+                                    for prop, initial_val in initial_const.items():
+                                        current_val = self.safe_get_attr(constraint, prop)
+                                        if current_val is not None and not self.values_equal(current_val, initial_val):
+                                            return f'bpy.data.objects["{obj.name}"].pose.bones["{pose_bone.name}"].constraints["{constraint.name}"].{prop}'
+            
+            # Shape keys
+            if 'shape_keys' in initial_obj and obj.data and hasattr(obj.data, 'shape_keys') and obj.data.shape_keys:
+                for key_block in obj.data.shape_keys.key_blocks:
+                    if key_block.name in initial_obj['shape_keys']:
+                        initial_key = initial_obj['shape_keys'][key_block.name]
+                        
+                        for prop, initial_val in initial_key.items():
+                            current_val = getattr(key_block, prop)
+                            if not self.values_equal(current_val, initial_val):
+                                return f'bpy.data.objects["{obj.name}"].data.shape_keys.key_blocks["{key_block.name}"].{prop}'
+            
+            # Modifiers
+            if 'modifiers' in initial_obj and obj.modifiers:
+                for modifier in obj.modifiers:
+                    if modifier.name in initial_obj['modifiers']:
+                        initial_mod = initial_obj['modifiers'][modifier.name]
+                        
+                        for prop, initial_val in initial_mod.items():
+                            current_val = self.safe_get_attr(modifier, prop)
+                            if current_val is not None and not self.values_equal(current_val, initial_val):
+                                return f'bpy.data.objects["{obj.name}"].modifiers["{modifier.name}"].{prop}'
+            
+            # Custom properties
+            if 'custom_props' in initial_obj:
+                for key, initial_val in initial_obj['custom_props'].items():
+                    if key in obj and not self.ignore(key):
+                        current_val = obj[key]
+                        if not self.values_equal(current_val, initial_val):
+                            return f'bpy.data.objects["{obj.name}"]["{key}"]'
+
+        
+        # Check cameras
+        for camera in bpy.data.cameras:
+            cam_key = f"cameras.{camera.name}"
+            if cam_key not in self._initial_state:
+                continue
+                
+            initial_cam = self._initial_state[cam_key]
+            
+            # Basic camera properties
+            cam_props = ['lens', 'sensor_width', 'sensor_height', 'clip_start', 'clip_end', 
+                        'type', 'ortho_scale', 'shift_x', 'shift_y']
+            for prop in cam_props:
+                if prop in initial_cam:
+                    current_val = getattr(camera, prop)
+                    if not self.values_equal(current_val, initial_cam[prop]):
+                        return f'bpy.data.cameras["{camera.name}"].{prop}'
+            
+            # DOF properties
+            if 'dof' in initial_cam and hasattr(camera, 'dof'):
+                for prop, initial_val in initial_cam['dof'].items():
+                    current_val = self.safe_get_attr(camera.dof, prop)
+                    if current_val is not None and not self.values_equal(current_val, initial_val):
+                        return f'bpy.data.cameras["{camera.name}"].dof.{prop}'
+            
+            # Custom properties
+            if 'custom_props' in initial_cam:
+                for key, initial_val in initial_cam['custom_props'].items():
+                    if key in camera and not self.ignore(key):
+                        current_val = camera[key]
+                        if not self.values_equal(current_val, initial_val):
+                            return f'bpy.data.cameras["{camera.name}"]["{key}"]'
+
+        # Check lights
+        for light in bpy.data.lights:
+            light_key = f"lights.{light.name}"
+            if light_key not in self._initial_state:
+                continue
+                
+            initial_light = self._initial_state[light_key]
+            
+            # Basic light properties
+            light_props = ['type', 'energy', 'color', 'use_shadow', 'shadow_soft_size', 
+                          'cutoff_distance', 'use_custom_distance', 'angle', 'spot_size', 
+                          'spot_blend', 'size', 'size_y', 'shape']
+            for prop in light_props:
+                if prop in initial_light:
+                    current_val = getattr(light, prop)
+                    if not self.values_equal(current_val, initial_light[prop]):
+                        # Check for array index (like color)
+                        if hasattr(current_val, '__len__') and not isinstance(current_val, str):
+                            for i, (curr, init) in enumerate(zip(current_val, initial_light[prop])):
+                                if not self.values_equal(curr, init):
+                                    return f'bpy.data.lights["{light.name}"].{prop}[{i}]'
+                        return f'bpy.data.lights["{light.name}"].{prop}'
+            
+            # Custom properties
+            if 'custom_props' in initial_light:
+                for key, initial_val in initial_light['custom_props'].items():
+                    if key in light and not self.ignore(key):
+                        current_val = light[key]
+                        if not self.values_equal(current_val, initial_val):
+                            return f'bpy.data.lights["{light.name}"]["{key}"]'
+
+        
+        # Check armatures
+        for armature in bpy.data.armatures:
+            arm_key = f"armatures.{armature.name}"
+            if arm_key not in self._initial_state:
+                continue
+                
+            initial_arm = self._initial_state[arm_key]
+            
+            # Armature display properties
+            arm_props = ['show_bone_custom_shapes', 'show_names', 'show_axes', 'display_type']
+            for prop in arm_props:
+                if prop in initial_arm:
+                    current_val = self.safe_get_attr(armature, prop)
+                    if current_val is not None and current_val != initial_arm[prop]:
+                        return f'bpy.data.armatures["{armature.name}"].{prop}'
+            
+            # Bone collections visibility
+            if 'collections' in initial_arm:
+                for collection_name, initial_collection in initial_arm['collections'].items():
+                    attr_name = initial_collection.get('attr_name', 'collections_all')
+                    
+                    if hasattr(armature, attr_name):
+                        try:
+                            collections = getattr(armature, attr_name)
+                            for collection in collections:
+                                if collection.name == collection_name:
+                                    if collection.is_visible != initial_collection['is_visible']:
+                                        return f'bpy.data.armatures["{armature.name}"].{attr_name}["{collection_name}"].is_visible'
+                                    break
+                        except:
+                            pass
+            
+            # Bone properties
+            if 'bones' in initial_arm:
+                for bone in armature.bones:
+                    if bone.name in initial_arm['bones']:
+                        initial_bone = initial_arm['bones'][bone.name]
+                        
+                        for prop, initial_val in initial_bone.items():
+                            current_val = self.safe_get_attr(bone, prop)
+                            if current_val is not None and not self.values_equal(current_val, initial_val):
+                                return f'bpy.data.armatures["{armature.name}"].bones["{bone.name}"].{prop}'
+            
+            # Custom properties
+            if 'custom_props' in initial_arm:
+                for key, initial_val in initial_arm['custom_props'].items():
+                    if key in armature and not self.ignore(key):
+                        current_val = armature[key]
+                        if not self.values_equal(current_val, initial_val):
+                            return f'bpy.data.armatures["{armature.name}"]["{key}"]'
+
+        
+        # Check materials
+        for mat in bpy.data.materials:
+            mat_key = f"materials.{mat.name}"
+            if mat_key not in self._initial_state:
+                continue
+                
+            initial_mat = self._initial_state[mat_key]
+            
+            # Basic material properties
+            for prop, initial_val in initial_mat.items():
+                if prop in ['nodes', 'custom_props']:
+                    continue
+                    
+                current_val = self.safe_get_attr(mat, prop)
+                if current_val is not None and current_val != initial_val:
+                    return f'bpy.data.materials["{mat.name}"].{prop}'
+            
+            # Node tree
+            if 'nodes' in initial_mat and mat.use_nodes and mat.node_tree:
+                for node in mat.node_tree.nodes:
+                    if node.name in initial_mat['nodes']:
+                        initial_node = initial_mat['nodes'][node.name]
+                        
+                        # Node properties
+                        for prop, initial_val in initial_node.items():
+                            if prop in ['inputs', 'outputs', 'color_ramp']:
+                                continue
+                                
+                            current_val = self.safe_get_attr(node, prop)
+                            if current_val is not None and not self.values_equal(current_val, initial_val):
+                                return f'bpy.data.materials["{mat.name}"].node_tree.nodes["{node.name}"].{prop}'
+                        
+                        # Input values
+                        if 'inputs' in initial_node and hasattr(node, 'inputs'):
+                            for i, input_socket in enumerate(node.inputs):
+                                if i in initial_node['inputs'] and hasattr(input_socket, 'default_value'):
+                                    try:
+                                        current_val = input_socket.default_value
+                                        initial_val = initial_node['inputs'][i]
+                                        
+                                        if not self.values_equal(current_val, initial_val):
+                                            # Check for array index (like color or vector inputs)
+                                            if hasattr(current_val, '__len__') and not isinstance(current_val, str):
+                                                for j, (curr, init) in enumerate(zip(current_val, initial_val)):
+                                                    if not self.values_equal(curr, init):
+                                                        return f'bpy.data.materials["{mat.name}"].node_tree.nodes["{node.name}"].inputs[{i}].default_value[{j}]'
+                                            return f'bpy.data.materials["{mat.name}"].node_tree.nodes["{node.name}"].inputs[{i}].default_value'
+                                    except:
+                                        pass
+                        
+                        # Output values
+                        if 'outputs' in initial_node and hasattr(node, 'outputs'):
+                            for i, output_socket in enumerate(node.outputs):
+                                if i in initial_node['outputs'] and hasattr(output_socket, 'default_value'):
+                                    try:
+                                        current_val = output_socket.default_value
+                                        initial_val = initial_node['outputs'][i]
+                                        
+                                        if not self.values_equal(current_val, initial_val):
+                                            # Check for array index
+                                            if hasattr(current_val, '__len__') and not isinstance(current_val, str):
+                                                for j, (curr, init) in enumerate(zip(current_val, initial_val)):
+                                                    if not self.values_equal(curr, init):
+                                                        return f'bpy.data.materials["{mat.name}"].node_tree.nodes["{node.name}"].outputs[{i}].default_value[{j}]'
+                                            return f'bpy.data.materials["{mat.name}"].node_tree.nodes["{node.name}"].outputs[{i}].default_value'
+                                    except:
+                                        pass
+                        
+                        # ColorRamp elements
+                        if 'color_ramp' in initial_node and hasattr(node, 'color_ramp') and node.color_ramp:
+                            if 'elements' in initial_node['color_ramp']:
+                                try:
+                                    for i, element in enumerate(node.color_ramp.elements):
+                                        if i in initial_node['color_ramp']['elements']:
+                                            initial_element = initial_node['color_ramp']['elements'][i]
+                                            
+                                            # Position
+                                            if 'position' in initial_element:
+                                                if not self.values_equal(element.position, initial_element['position']):
+                                                    return f'bpy.data.materials["{mat.name}"].node_tree.nodes["{node.name}"].color_ramp.elements[{i}].position'
+                                            
+                                            # Color
+                                            if 'color' in initial_element:
+                                                if not self.values_equal(element.color, initial_element['color']):
+                                                    # Check individual color components
+                                                    for j, (curr, init) in enumerate(zip(element.color, initial_element['color'])):
+                                                        if not self.values_equal(curr, init):
+                                                            return f'bpy.data.materials["{mat.name}"].node_tree.nodes["{node.name}"].color_ramp.elements[{i}].color[{j}]'
+                                                    return f'bpy.data.materials["{mat.name}"].node_tree.nodes["{node.name}"].color_ramp.elements[{i}].color'
+                                except:
+                                    pass
+            
+            # Custom properties
+            if 'custom_props' in initial_mat:
+                for key, initial_val in initial_mat['custom_props'].items():
+                    if key in mat and not self.ignore(key):
+                        current_val = mat[key]
+                        if not self.values_equal(current_val, initial_val):
+                            return f'bpy.data.materials["{mat.name}"]["{key}"]'
+
+        
+        # Check scenes
+        for scene in bpy.data.scenes:
+            scene_key = f"scenes.{scene.name}"
+            if scene_key not in self._initial_state:
+                continue
+                
+            initial_scene = self._initial_state[scene_key]
+            
+            # Basic scene properties
+            basic_props = ['frame_current', 'frame_start', 'frame_end', 'frame_step', 'use_gravity']
+            for prop in basic_props:
+                if prop in initial_scene:
+                    current_val = getattr(scene, prop)
+                    if not self.values_equal(current_val, initial_scene[prop]):
+                        return f'bpy.data.scenes["{scene.name}"].{prop}'
+            
+            # Gravity vector
+            if 'gravity' in initial_scene:
+                if not self.values_equal(scene.gravity, initial_scene['gravity']):
+                    # Check individual components
+                    for i, (current, initial) in enumerate(zip(scene.gravity, initial_scene['gravity'])):
+                        if not self.values_equal(current, initial):
+                            return f'bpy.data.scenes["{scene.name}"].gravity[{i}]'
+            
+            # Render properties
+            if 'render' in initial_scene and hasattr(scene, 'render'):
+                for prop, initial_val in initial_scene['render'].items():
+                    current_val = self.safe_get_attr(scene.render, prop)
+                    if current_val is not None and not self.values_equal(current_val, initial_val):
+                        return f'bpy.data.scenes["{scene.name}"].render.{prop}'
+            
+            # EEVEE properties
+            if 'eevee' in initial_scene and hasattr(scene, 'eevee'):
+                for prop, initial_val in initial_scene['eevee'].items():
+                    current_val = self.safe_get_attr(scene.eevee, prop)
+                    if current_val is not None and not self.values_equal(current_val, initial_val):
+                        return f'bpy.data.scenes["{scene.name}"].eevee.{prop}'
+            
+            # Cycles properties
+            if 'cycles' in initial_scene and hasattr(scene, 'cycles'):
+                for prop, initial_val in initial_scene['cycles'].items():
+                    current_val = self.safe_get_attr(scene.cycles, prop)
+                    if current_val is not None and not self.values_equal(current_val, initial_val):
+                        return f'bpy.data.scenes["{scene.name}"].cycles.{prop}'
+            
+            # World properties
+            if 'world' in initial_scene and scene.world:
+                world_props = ['use_nodes', 'color']
+                for prop in world_props:
+                    if prop in initial_scene['world']:
+                        current_val = getattr(scene.world, prop)
+                        if not self.values_equal(current_val, initial_scene['world'][prop]):
+                            # Check for array index (like color)
+                            if hasattr(current_val, '__len__') and not isinstance(current_val, str):
+                                for i, (curr, init) in enumerate(zip(current_val, initial_scene['world'][prop])):
+                                    if not self.values_equal(curr, init):
+                                        return f'bpy.data.worlds["{scene.world.name}"].{prop}[{i}]'
+                            return f'bpy.data.worlds["{scene.world.name}"].{prop}'
+                
+                # World node tree
+                if 'nodes' in initial_scene['world'] and scene.world.use_nodes and scene.world.node_tree:
+                    for node in scene.world.node_tree.nodes:
+                        if node.name in initial_scene['world']['nodes']:
+                            initial_node = initial_scene['world']['nodes'][node.name]
+                            
+                            # Input values
+                            if 'inputs' in initial_node and hasattr(node, 'inputs'):
+                                for i, input_socket in enumerate(node.inputs):
+                                    if i in initial_node['inputs'] and hasattr(input_socket, 'default_value'):
+                                        try:
+                                            current_val = input_socket.default_value
+                                            initial_val = initial_node['inputs'][i]
+                                            
+                                            if not self.values_equal(current_val, initial_val):
+                                                # Check for array index
+                                                if hasattr(current_val, '__len__') and not isinstance(current_val, str):
+                                                    for j, (curr, init) in enumerate(zip(current_val, initial_val)):
+                                                        if not self.values_equal(curr, init):
+                                                            return f'bpy.data.worlds["{scene.world.name}"].node_tree.nodes["{node.name}"].inputs[{i}].default_value[{j}]'
+                                                return f'bpy.data.worlds["{scene.world.name}"].node_tree.nodes["{node.name}"].inputs[{i}].default_value'
+                                        except:
+                                            pass
+        
+        return None
+
+
+
+
 class SCENE_OT_add_path_target(bpy.types.Operator):
     bl_idname = "scene.add_path_target"
     bl_label = "Add Path"
@@ -3046,12 +3102,112 @@ class SCENE_OT_add_path_target(bpy.types.Operator):
         props.path_max_value = 1.0
         props.path_false_value = 0.0
         props.path_true_value = 1.0
+        props.path_recorded_min = False  # NEW: Clear recording status
+        props.path_recorded_max = False  # NEW: Clear recording status
         
         # Report what was detected and added
         type_text = "boolean" if detected_type == 'BOOLEAN' else "float"
         self.report({'INFO'}, f"Added {type_text} path")
         
         return {'FINISHED'}
+
+class SCENE_OT_record_path_min(bpy.types.Operator):
+    """Record current value of custom path as minimum"""
+    bl_idname = "scene.record_path_min"
+    bl_label = "Record Min"
+    bl_description = "Record the current value of the custom path as minimum"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        props = context.scene.driver_recorder_props
+        
+        if not props.custom_path_input:
+            self.report({'ERROR'}, "Please enter a custom path first")
+            return {'CANCELLED'}
+        
+        try:
+            # Parse and get current value
+            data_block, data_path, index = parse_target_path(props.custom_path_input)
+            
+            if data_block is None or data_path is None:
+                self.report({'ERROR'}, "Invalid path format")
+                return {'CANCELLED'}
+            
+            # Get current value
+            if index >= 0:
+                current_value = data_block.path_resolve(data_path)[index]
+            else:
+                current_value = data_block.path_resolve(data_path)
+            
+            # Detect type and set min value
+            detected_type = auto_detect_path_type(data_block, data_path, index)
+            
+            if detected_type == 'BOOLEAN':
+                # For boolean, record as false value
+                props.path_false_value = float(current_value)
+                props.path_recorded_min = True
+                self.report({'INFO'}, f"Recorded FALSE value: {current_value}")
+            else:
+                # For float, record as min
+                props.path_min_value = float(current_value)
+                props.path_recorded_min = True
+                self.report({'INFO'}, f"Recorded MIN value: {current_value:.3f}")
+            
+            return {'FINISHED'}
+            
+        except Exception as e:
+            self.report({'ERROR'}, f"Failed to read path: {str(e)}")
+            return {'CANCELLED'}
+
+
+class SCENE_OT_record_path_max(bpy.types.Operator):
+    """Record current value of custom path as maximum"""
+    bl_idname = "scene.record_path_max"
+    bl_label = "Record Max"
+    bl_description = "Record the current value of the custom path as maximum"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        props = context.scene.driver_recorder_props
+        
+        if not props.custom_path_input:
+            self.report({'ERROR'}, "Please enter a custom path first")
+            return {'CANCELLED'}
+        
+        try:
+            # Parse and get current value
+            data_block, data_path, index = parse_target_path(props.custom_path_input)
+            
+            if data_block is None or data_path is None:
+                self.report({'ERROR'}, "Invalid path format")
+                return {'CANCELLED'}
+            
+            # Get current value
+            if index >= 0:
+                current_value = data_block.path_resolve(data_path)[index]
+            else:
+                current_value = data_block.path_resolve(data_path)
+            
+            # Detect type and set max value
+            detected_type = auto_detect_path_type(data_block, data_path, index)
+            
+            if detected_type == 'BOOLEAN':
+                # For boolean, record as true value
+                props.path_true_value = float(current_value)
+                props.path_recorded_max = True
+                self.report({'INFO'}, f"Recorded TRUE value: {current_value}")
+            else:
+                # For float, record as max
+                props.path_max_value = float(current_value)
+                props.path_recorded_max = True
+                self.report({'INFO'}, f"Recorded MAX value: {current_value:.3f}")
+            
+            return {'FINISHED'}
+            
+        except Exception as e:
+            self.report({'ERROR'}, f"Failed to read path: {str(e)}")
+            return {'CANCELLED'}
+
 
 class SCENE_OT_edit_path_target(bpy.types.Operator):
     bl_idname = "scene.edit_path_target"
@@ -3086,6 +3242,10 @@ class SCENE_OT_edit_path_target(bpy.types.Operator):
             # Reset float values to defaults
             props.path_min_value = 0.0
             props.path_max_value = 1.0
+        
+        # Reset recording status
+        props.path_recorded_min = False
+        props.path_recorded_max = False
         
         # Remove from list
         del path_data[self.key_to_edit]
@@ -3596,6 +3756,8 @@ classes = (
     SCENE_OT_validate_path,
     SCENE_OT_add_path_target,
     SCENE_OT_remove_path_target,
+    SCENE_OT_record_path_min,      # NEW
+    SCENE_OT_record_path_max,      # NEW
     ANIM_OT_create_drivers,
     ANIM_OT_remove_drivers,
     SCENE_OT_clear_all,
