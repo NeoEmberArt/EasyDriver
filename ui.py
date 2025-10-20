@@ -317,6 +317,8 @@ class BONEMINMAX_PT_main_panel(bpy.types.Panel):
     #---------------------------------------
     # UI elements
     #---------------------------------------
+
+
     def draw_path_targets(self, layout, props, context):
         """Draw custom path target controls."""
         icons = get_version_compatible_icons()
@@ -342,8 +344,31 @@ class BONEMINMAX_PT_main_panel(bpy.types.Panel):
             path_row.enabled = False
         
         if props.custom_path_input:
-            # Auto-detect and show the type
-            detected_type = auto_detect_path_type(context.active_object, props.custom_path_input)
+            # Record buttons
+            record_row = add_box.row(align=True)
+            record_row.scale_y = 1.2
+            
+            # Try to detect type for button labels
+            try:
+                data_block, data_path, index = parse_target_path(props.custom_path_input)
+                detected_type = auto_detect_path_type(data_block, data_path, index) if data_block else 'FLOAT'
+            except:
+                detected_type = 'FLOAT'
+            
+            if detected_type == 'BOOLEAN':
+                # Boolean: Record False / Record True
+                record_row.operator("scene.record_path_min", text="Record False", 
+                                icon=icons['socket_on'] if props.path_recorded_min else icons['socket_off'])
+                record_row.operator("scene.record_path_max", text="Record True", 
+                                icon=icons['socket_on'] if props.path_recorded_max else icons['socket_off'])
+            else:
+                # Float: Record Min / Record Max
+                record_row.operator("scene.record_path_min", text="Record Min", 
+                                icon=icons['socket_on'] if props.path_recorded_min else icons['socket_off'])
+                record_row.operator("scene.record_path_max", text="Record Max", 
+                                icon=icons['socket_on'] if props.path_recorded_max else icons['socket_off'])
+            
+            add_box.separator(factor=0.3)
             
             # Show detected type
             type_row = add_box.row()
@@ -399,6 +424,10 @@ class BONEMINMAX_PT_main_panel(bpy.types.Panel):
                 # Remove button
                 remove_op = btn_col.operator("scene.remove_path_target", text="", icon='X')
                 remove_op.key_to_remove = path
+
+
+
+
 
     def draw_pose_targets(self, layout, props):
         """Draw pose target controls."""
