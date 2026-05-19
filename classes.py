@@ -48,11 +48,8 @@ class DriverRecorderProperties(bpy.types.PropertyGroup):
         update=auto_apply_object_source  # Remove lambda wrapper
     )
     
-    bpy.types.Scene.source_fine_tune_mode = bpy.props.BoolProperty(
-        name="Source Fine Tune Mode",
-        default=False
-    )
     # Bone fine tune properties
+    # NOTE: source_fine_tune_mode is registered on bpy.types.Scene in __init__.py register()
     fine_tune_min_value: bpy.props.FloatProperty(
         name="Min Value",
         update=update_fine_tune_min_value
@@ -112,7 +109,8 @@ class DriverRecorderProperties(bpy.types.PropertyGroup):
         name="Source Type",
         items=[
             ('BONE', 'Bone Transform', 'Use bone transforms as source'),
-            ('OBJECT', 'Object Transform', 'Use object transforms as source')
+            ('OBJECT', 'Object Transform', 'Use object transforms as source'),
+            ('CUSTOM_PROP', 'Custom Property', 'Use a custom property as source')
         ],
         default='BONE'
     )
@@ -173,16 +171,16 @@ class DriverRecorderProperties(bpy.types.PropertyGroup):
     shapekey_min_value: bpy.props.FloatProperty(
         name="Min Value",
         default=0.0,
-        min=0.0,
-        max=1.0,
+        soft_min=-1.0,
+        soft_max=1.0,
         update=lambda self, context: update_shapekey_value(self, context, True)
     )
-    
+
     shapekey_max_value: bpy.props.FloatProperty(
-        name="Max Value", 
+        name="Max Value",
         default=1.0,
-        min=0.0,
-        max=1.0,
+        soft_min=-1.0,
+        soft_max=1.0,
         update=lambda self, context: update_shapekey_value(self, context, False)
     )
     
@@ -228,6 +226,30 @@ class DriverRecorderProperties(bpy.types.PropertyGroup):
     
     # Path list data (JSON string)
     path_list_data: bpy.props.StringProperty(default="{}")
+
+    # ── Custom-property source ──────────────────────────────────────────────
+    # Which object/armature owns the custom prop
+    custom_prop_source_object: bpy.props.PointerProperty(
+        name="Object / Armature",
+        type=bpy.types.Object,
+        description="Object or armature that owns the custom property"
+    )
+    # Optional: drive a bone custom prop instead of the object itself
+    custom_prop_bone: bpy.props.StringProperty(
+        name="Bone (optional)",
+        description="Leave empty to use the object custom prop; enter a bone name to use a bone custom prop"
+    )
+    # Property name to create / use
+    custom_prop_name: bpy.props.StringProperty(
+        name="Property Name",
+        default="my_driver",
+        description="Name of the custom property (will be created if it does not exist)"
+    )
+    # Range
+    custom_prop_min: bpy.props.FloatProperty(name="Min", default=0.0)
+    custom_prop_max: bpy.props.FloatProperty(name="Max", default=1.0)
+    # Internal: set to True once the property has been registered as source
+    custom_prop_is_set: bpy.props.BoolProperty(default=False)
 
 #---------------------------------------
 # EyeDropper Functions
@@ -330,9 +352,6 @@ class ANIM_OT_object_eyedropper(bpy.types.Operator):
 #---------------------------------------
 # Constraint Operators
 #---------------------------------------
-
-import bpy
-import math
 
 class OBJECT_OT_limit_source_transforms(bpy.types.Operator):
     """Add limit constraints to source bone/object based on recorded min/max values"""
@@ -1411,7 +1430,7 @@ class ANIM_OT_toggle_fine_tune(bpy.types.Operator):
             if "LOC" in detected_axis:
                 axis_idx = ["X", "Y", "Z"].index(detected_axis.split()[-1])
                 props.fine_tune_object_min_value = props.from_object_min_location[axis_idx]
-                props.fine_tune_object_max_value = props.from_object_max_location[axis_idx],
+                props.fine_tune_object_max_value = props.from_object_max_location[axis_idx]
             elif "ROT" in detected_axis:
                 axis_idx = ["X", "Y", "Z"].index(detected_axis.split()[-1])
                 props.fine_tune_object_min_value = props.from_object_min_rotation[axis_idx]
@@ -1681,24 +1700,29 @@ class POSE_OT_remove_pose_bone(bpy.types.Operator):
 class POSE_OT_record_to_min_pose(bpy.types.Operator):
     bl_idname = "pose.record_to_min_pose"
     bl_label = "Record MIN Pose"
-    bl_description = "Record current pose as minimum for all selected bones"
+    bl_description = "Record current pose as minimum for all selected bones (supports multiple armatures)"
 
     def execute(self, context):
         props = context.scene.driver_recorder_props
-        obj, selected_bones = get_selected_pose_bones(context)
-        
-        if not obj or not selected_bones:
+        _primary_obj, arm_bone_pairs = get_selected_pose_bones(context)
+
+        if not arm_bone_pairs:
             self.report({'ERROR'}, "Please select bones in Pose Mode")
             return {'CANCELLED'}
-        
+
         to_data = get_to_bones_data(props)
-        
-        for bone in selected_bones:
-            # Use IK-aware bone transform recording
+        recorded = 0
+
+        for arm_obj, bone in arm_bone_pairs:
+            # Unique key = "ArmatureName::BoneName" so same-named bones on
+            # different rigs never collide.
+            key = f"{arm_obj.name}::{bone.name}"
+
             location, rotation, scale = self.get_bone_transforms(bone)
-            
-            bone_data = to_data.get(bone.name, {
-                'armature': obj.name,
+
+            bone_data = to_data.get(key, {
+                'armature': arm_obj.name,
+                'bone_name': bone.name,
                 'has_min': False,
                 'has_max': False,
                 'min_location': [0, 0, 0],
@@ -1707,19 +1731,27 @@ class POSE_OT_record_to_min_pose(bpy.types.Operator):
                 'max_rotation': [0, 0, 0],
                 'detected_changes': []
             })
-            
+
+            # Always keep armature field in sync (key encodes it already, but
+            # we still need it for the driver-creation lookup).
+            bone_data['armature']   = arm_obj.name
+            bone_data['bone_name']  = bone.name
             bone_data['min_location'] = location
             bone_data['min_rotation'] = rotation
-            bone_data['min_scale'] = scale
-            bone_data['has_min'] = True
-            bone_data['has_max'] = False  # Reset max when recording new min
-            bone_data['detected_changes'] = []  # Reset changes
-            
-            to_data[bone.name] = bone_data
-        
+            bone_data['min_scale']    = scale
+            bone_data['has_min']      = True
+            bone_data['has_max']      = False  # reset max on new min
+            bone_data['detected_changes'] = []
+
+            to_data[key] = bone_data
+            recorded += 1
+
         set_to_bones_data(props, to_data)
-        
-        self.report({'INFO'}, f"Recorded MIN pose for {len(selected_bones)} bones")
+
+        armature_names = sorted({arm.name for arm, _ in arm_bone_pairs})
+        self.report({'INFO'},
+            f"Recorded MIN pose for {recorded} bone(s) across {len(armature_names)} armature(s): "
+            + ", ".join(armature_names))
         return {'FINISHED'}
     
     def get_bone_transforms(self, bone):
@@ -1811,88 +1843,106 @@ class POSE_OT_record_to_max_pose(bpy.types.Operator):
     def execute(self, context):
         props = context.scene.driver_recorder_props
         to_data = get_to_bones_data(props)
-        
-        # Find all bones that have MIN recorded
-        bones_with_min = []
-        armature_name = None
-        
-        for bone_name, bone_data in to_data.items():
+
+        # Build a dict: armature_name -> [key, ...] for all bones with MIN recorded.
+        # Keys are "ArmatureName::BoneName" so same-named bones on different rigs
+        # never collide.
+        bones_by_armature = {}
+        for key, bone_data in to_data.items():
             if bone_data.get('has_min', False):
-                bones_with_min.append(bone_name)
-                if not armature_name:
-                    armature_name = bone_data.get('armature')
-        
-        if not bones_with_min:
+                arm_name = bone_data.get('armature')
+                if arm_name:
+                    bones_by_armature.setdefault(arm_name, []).append(key)
+
+        if not bones_by_armature:
             self.report({'ERROR'}, "No bones with MIN pose recorded. Please record MIN pose first.")
             return {'CANCELLED'}
-        
-        # Find the armature object
-        armature_obj = context.scene.objects.get(armature_name)
-        if not armature_obj or armature_obj.type != 'ARMATURE':
-            self.report({'ERROR'}, f"Armature '{armature_name}' not found in scene")
-            return {'CANCELLED'}
-        
+
         bones_processed = 0
         bones_not_found = []
-        
-        for bone_name in bones_with_min:
-            bone = armature_obj.pose.bones.get(bone_name)
-            if not bone:
-                bones_not_found.append(bone_name)
-                continue
-            
-            bone_data = to_data[bone_name]
-            
-            # Record max values using IK-aware method
-            location, rotation, scale = self.get_bone_transforms(bone)
-            
-            bone_data['max_location'] = location
-            bone_data['max_rotation'] = rotation
-            bone_data['max_scale'] = scale
-            bone_data['has_max'] = True
-            
-            # Detect changes
-            min_vals = {
-                'location': bone_data['min_location'],
-                'rotation': bone_data['min_rotation'],
-                'scale': bone_data.get('min_scale', [1, 1, 1])  # Default scale if not recorded
-            }
-            max_vals = {
-                'location': bone_data['max_location'],
-                'rotation': bone_data['max_rotation'],
-                'scale': bone_data['max_scale']
-            }
-            
-            changes = detect_significant_changes(min_vals, max_vals)
-            bone_data['detected_changes'] = []
-            
-            for transform_type, axis, min_val, max_val in changes:
-                axis_names = ['X', 'Y', 'Z']
-                if transform_type == 'location':
-                    change_str = f"LOC {axis_names[axis]}"
-                elif transform_type == 'rotation_euler':
-                    change_str = f"ROT {axis_names[axis]}"
-                elif transform_type == 'scale':
-                    change_str = f"SCALE {axis_names[axis]}"
+        armatures_processed = []
 
-                bone_data['detected_changes'].append({
-                    'type': transform_type,
-                    'axis': axis,
-                    'display': change_str,
-                    'min_val': min_val,
-                    'max_val': max_val
-                })
-            
-            bones_processed += 1
-        
+        # Process each armature separately so cross-armature setups work correctly
+        for armature_name, keys in bones_by_armature.items():
+            armature_obj = context.scene.objects.get(armature_name)
+            if not armature_obj or armature_obj.type != 'ARMATURE':
+                self.report({'WARNING'}, f"Armature '{armature_name}' not found in scene, skipping its bones")
+                bones_not_found.extend(keys)
+                continue
+
+            armatures_processed.append(armature_name)
+
+            for key in keys:
+                bone_data = to_data[key]
+                # bone_name is stored inside the dict; fall back to parsing the key
+                bone_name = bone_data.get('bone_name') or key.split('::')[-1]
+                bone = armature_obj.pose.bones.get(bone_name)
+                if not bone:
+                    bones_not_found.append(key)
+                    continue
+
+                bone_data = to_data[key]
+
+                # Record max values using IK-aware method
+                location, rotation, scale = self.get_bone_transforms(bone)
+
+                bone_data['max_location'] = location
+                bone_data['max_rotation'] = rotation
+                bone_data['max_scale'] = scale
+                bone_data['has_max'] = True
+
+                # Detect which axes changed significantly between min and max
+                min_vals = {
+                    'location': bone_data['min_location'],
+                    'rotation': bone_data['min_rotation'],
+                    'scale': bone_data.get('min_scale', [1, 1, 1])
+                }
+                max_vals = {
+                    'location': bone_data['max_location'],
+                    'rotation': bone_data['max_rotation'],
+                    'scale': bone_data['max_scale']
+                }
+
+                changes = detect_significant_changes(min_vals, max_vals)
+                bone_data['detected_changes'] = []
+
+                for transform_type, axis, min_val, max_val in changes:
+                    axis_names = ['X', 'Y', 'Z']
+                    if transform_type == 'location':
+                        change_str = f"LOC {axis_names[axis]}"
+                    elif transform_type == 'rotation_euler':
+                        change_str = f"ROT {axis_names[axis]}"
+                    elif transform_type == 'scale':
+                        change_str = f"SCALE {axis_names[axis]}"
+                    else:
+                        change_str = f"{transform_type.upper()} {axis_names[axis]}"
+
+                    bone_data['detected_changes'].append({
+                        'type': transform_type,
+                        'axis': axis,
+                        'display': change_str,
+                        'min_val': min_val,
+                        'max_val': max_val
+                    })
+
+                bones_processed += 1
+
         set_to_bones_data(props, to_data)
-        
+
         # Report results
+        arm_label = ", ".join(armatures_processed) if armatures_processed else "unknown"
         if bones_not_found:
-            self.report({'WARNING'}, f"Recorded MAX pose for {bones_processed} bones. Could not find: {', '.join(bones_not_found)}")
+            not_found_display = ", ".join(
+                (d.get('bone_name') or k.split("::")[-1])
+                for k, d in ((k, to_data.get(k, {})) for k in bones_not_found)
+            )
+            self.report({'WARNING'},
+                f"Recorded MAX pose for {bones_processed} bones across {len(armatures_processed)} armature(s). "
+                f"Could not find: {not_found_display}")
         else:
-            self.report({'INFO'}, f"Recorded MAX pose for {bones_processed} bones from armature '{armature_name}'")
-        
+            self.report({'INFO'},
+                f"Recorded MAX pose for {bones_processed} bones across {len(armatures_processed)} armature(s): {arm_label}")
+
         return {'FINISHED'}
     
     def get_bone_transforms(self, bone):
@@ -2021,7 +2071,25 @@ class MESH_OT_add_shapekey_target(bpy.types.Operator):
             'object': props.shapekey_target_object,
             'shapekey': props.shapekey_name,
             'min_value': props.shapekey_min_value,
-            'max_value': props.shapekey_max_value
+            'max_value': props.shapekey_max_value,
+            # Snapshot source at add-time so each entry is self-contained
+            'source_armature': props.from_armature,
+            'source_bone': props.from_bone,
+            'source_object': props.from_object,
+            'from_detected_axis': props.from_detected_axis,
+            'from_min_location': list(props.from_min_location),
+            'from_max_location': list(props.from_max_location),
+            'from_min_rotation': list(props.from_min_rotation),
+            'from_max_rotation': list(props.from_max_rotation),
+            'from_min_scale':    list(props.from_min_scale),
+            'from_max_scale':    list(props.from_max_scale),
+            'from_object_detected_axis': props.from_object_detected_axis,
+            'from_object_min_location': list(props.from_object_min_location),
+            'from_object_max_location': list(props.from_object_max_location),
+            'from_object_min_rotation': list(props.from_object_min_rotation),
+            'from_object_max_rotation': list(props.from_object_max_rotation),
+            'from_object_min_scale':    list(props.from_object_min_scale),
+            'from_object_max_scale':    list(props.from_object_max_scale),
         }
         
         set_shapekey_list_data(props, shapekey_data)
@@ -2029,13 +2097,17 @@ class MESH_OT_add_shapekey_target(bpy.types.Operator):
         # Reset the shape key value to zero
         key_block.value = 0.0
         
+        # Capture names before clearing
+        added_name   = props.shapekey_name
+        added_object = props.shapekey_target_object
+
         # Clear inputs after adding
         props.shapekey_target_object = ""
         props.shapekey_name = ""
         props.shapekey_min_value = 0.0
         props.shapekey_max_value = 1.0
-        
-        self.report({'INFO'}, f"Added {props.shapekey_name} from {props.shapekey_target_object} (reset to 0.0)")
+
+        self.report({'INFO'}, f"Added '{added_name}' from '{added_object}' (reset to 0.0)")
         return {'FINISHED'}
 
 
@@ -2135,7 +2207,7 @@ class ANIM_OT_path_eyedropper(bpy.types.Operator):
         if event.type == 'TIMER':
             # Check for changes
             detected_path = self.detect_changes(context)
-            if detected_path:
+            if detected_path and self.is_valid_editable_path(detected_path):
                 # Set the detected path
                 props = context.scene.driver_recorder_props
                 props.custom_path_input = detected_path
@@ -2144,6 +2216,7 @@ class ANIM_OT_path_eyedropper(bpy.types.Operator):
                 self.finish(context)
                 return {'FINISHED'}
         return {'PASS_THROUGH'}
+
     
     def ignore(self, key):
         """Check if a custom property should be ignored"""
@@ -2151,13 +2224,14 @@ class ANIM_OT_path_eyedropper(bpy.types.Operator):
         blenderkit_props = {
             'scatter1', 'scatter2', 'scatter3', 'scatter4', 'scatter5',
             'scattered', 'asset_id', 'asset_index', 'asset_data',
-            'blenderkit', 'bkit_ratings', 'bkit_comments'
+            'blenderkit', 'bkit_ratings', 'bkit_comments', 'bkit_last_updated',
+            'bkit_downloads', 'bkit_installed_version', 'bkit_asset_type'
         }
         
         # General addon patterns
         addon_props = {
             'cycles_visibility', 'locked_shape_key', '_RNA_UI',
-            'cycles', 'eevee', 'workbench'
+            'cycles', 'eevee', 'workbench', 'yp'
         }
         
         # Check exact matches
@@ -2622,6 +2696,55 @@ class ANIM_OT_path_eyedropper(bpy.types.Operator):
             
             self._initial_state[f"scenes.{scene.name}"] = scene_data
 
+    def is_valid_editable_path(self, path_string):
+        """Check if a data path is valid and editable"""
+        try:
+            # Try to evaluate the path
+            result = eval(path_string)
+            
+            # Check if it's a read-only property
+            # Extract the object and property from the path
+            parts = path_string.split('.')
+            
+            # Navigate to the property to check if it's editable
+            if len(parts) >= 2:
+                # Build the object path (everything except the last property)
+                obj_path = '.'.join(parts[:-1])
+                prop_name = parts[-1]
+                
+                # Handle array indexing
+                if '[' in prop_name:
+                    prop_name = prop_name.split('[')[0]
+                
+                try:
+                    obj = eval(obj_path)
+                    
+                    # Check if the property exists in RNA
+                    if hasattr(obj, 'bl_rna') and hasattr(obj.bl_rna, 'properties'):
+                        if prop_name in obj.bl_rna.properties:
+                            prop = obj.bl_rna.properties[prop_name]
+                            
+                            # Check if property is read-only
+                            if prop.is_readonly:
+                                return False
+                            
+                            # Check if property is animatable (can be keyframed/driven)
+                            if hasattr(prop, 'is_animatable') and not prop.is_animatable:
+                                return False
+                    
+                    # Try to set the value to itself (test if it's writable)
+                    current_value = result
+                    exec(f"{path_string} = current_value")
+                    
+                    return True
+                    
+                except (AttributeError, TypeError, KeyError):
+                    return False
+            
+            return True
+            
+        except (SyntaxError, NameError, AttributeError, TypeError, KeyError, IndexError):
+            return False
     def detect_changes(self, context):
         """Detect what property has changed and return its data path"""
         
@@ -2634,8 +2757,7 @@ class ANIM_OT_path_eyedropper(bpy.types.Operator):
             initial_obj = self._initial_state[obj_key]
             
             # Basic properties
-            basic_props = ['location', 'rotation_euler', 'rotation_quaternion', 'scale', 
-                          'hide_viewport', 'hide_render', 'hide_select']
+            basic_props = ['location', 'rotation_euler', 'rotation_quaternion', 'scale', 'hide_viewport', 'hide_render', 'hide_select']
             for prop in basic_props:
                 if prop in initial_obj:
                     current_val = getattr(obj, prop)
@@ -2738,7 +2860,8 @@ class ANIM_OT_path_eyedropper(bpy.types.Operator):
                     if key in obj and not self.ignore(key):
                         current_val = obj[key]
                         if not self.values_equal(current_val, initial_val):
-                            return f'bpy.data.objects["{obj.name}"]["{key}"]'
+                            if self.is_valid_editable_path(f'bpy.data.objects["{obj.name}"]["{key}"]'):
+                                return f'bpy.data.objects["{obj.name}"]["{key}"]'
 
         
         # Check cameras
@@ -3044,8 +3167,6 @@ class ANIM_OT_path_eyedropper(bpy.types.Operator):
         return None
 
 
-
-
 class SCENE_OT_add_path_target(bpy.types.Operator):
     bl_idname = "scene.add_path_target"
     bl_label = "Add Path"
@@ -3078,21 +3199,13 @@ class SCENE_OT_add_path_target(bpy.types.Operator):
             self.report({'WARNING'}, f"Path already exists in list")
             return {'CANCELLED'}
         
-        # Use the detected type but manual values from UI
-        if detected_type == 'FLOAT':
-            path_data[key] = {
-                'path': props.custom_path_input,
-                'type': 'FLOAT',
-                'min_value': props.path_min_value,
-                'max_value': props.path_max_value
-            }
-        else:  # BOOLEAN
-            path_data[key] = {
-                'path': props.custom_path_input,
-                'type': 'BOOLEAN',
-                'false_value': props.path_false_value,
-                'true_value': props.path_true_value
-            }
+        # Store type but use the same min/max values for both float and boolean
+        path_data[key] = {
+            'path': props.custom_path_input,
+            'type': detected_type,
+            'min_value': props.path_min_value,
+            'max_value': props.path_max_value
+        }
         
         set_path_list_data(props, path_data)
         
@@ -3102,14 +3215,15 @@ class SCENE_OT_add_path_target(bpy.types.Operator):
         props.path_max_value = 1.0
         props.path_false_value = 0.0
         props.path_true_value = 1.0
-        props.path_recorded_min = False  # NEW: Clear recording status
-        props.path_recorded_max = False  # NEW: Clear recording status
+        props.path_recorded_min = False
+        props.path_recorded_max = False
         
         # Report what was detected and added
         type_text = "boolean" if detected_type == 'BOOLEAN' else "float"
         self.report({'INFO'}, f"Added {type_text} path")
         
         return {'FINISHED'}
+
 
 class SCENE_OT_record_path_min(bpy.types.Operator):
     """Record current value of custom path as minimum"""
@@ -3139,19 +3253,15 @@ class SCENE_OT_record_path_min(bpy.types.Operator):
             else:
                 current_value = data_block.path_resolve(data_path)
             
-            # Detect type and set min value
+            # Detect type for info message
             detected_type = auto_detect_path_type(data_block, data_path, index)
             
-            if detected_type == 'BOOLEAN':
-                # For boolean, record as false value
-                props.path_false_value = float(current_value)
-                props.path_recorded_min = True
-                self.report({'INFO'}, f"Recorded FALSE value: {current_value}")
-            else:
-                # For float, record as min
-                props.path_min_value = float(current_value)
-                props.path_recorded_min = True
-                self.report({'INFO'}, f"Recorded MIN value: {current_value:.3f}")
+            # Always record as min value, regardless of type
+            props.path_min_value = float(current_value)
+            props.path_recorded_min = True
+            
+            type_text = "BOOLEAN" if detected_type == 'BOOLEAN' else "FLOAT"
+            self.report({'INFO'}, f"Recorded MIN value: {current_value:.3f} ({type_text})")
             
             return {'FINISHED'}
             
@@ -3188,19 +3298,15 @@ class SCENE_OT_record_path_max(bpy.types.Operator):
             else:
                 current_value = data_block.path_resolve(data_path)
             
-            # Detect type and set max value
+            # Detect type for info message
             detected_type = auto_detect_path_type(data_block, data_path, index)
             
-            if detected_type == 'BOOLEAN':
-                # For boolean, record as true value
-                props.path_true_value = float(current_value)
-                props.path_recorded_max = True
-                self.report({'INFO'}, f"Recorded TRUE value: {current_value}")
-            else:
-                # For float, record as max
-                props.path_max_value = float(current_value)
-                props.path_recorded_max = True
-                self.report({'INFO'}, f"Recorded MAX value: {current_value:.3f}")
+            # Always record as max value, regardless of type
+            props.path_max_value = float(current_value)
+            props.path_recorded_max = True
+            
+            type_text = "BOOLEAN" if detected_type == 'BOOLEAN' else "FLOAT"
+            self.report({'INFO'}, f"Recorded MAX value: {current_value:.3f} ({type_text})")
             
             return {'FINISHED'}
             
@@ -3227,23 +3333,14 @@ class SCENE_OT_edit_path_target(bpy.types.Operator):
         # Get the data
         path_info = path_data[self.key_to_edit]
         
-        # Load values into inputs
+        # Load values into inputs - same for both float and boolean
         props.custom_path_input = path_info['path']
+        props.path_min_value = path_info['min_value']
+        props.path_max_value = path_info['max_value']
         
-        if path_info['type'] == 'FLOAT':
-            props.path_min_value = path_info['min_value']
-            props.path_max_value = path_info['max_value']
-            # Reset boolean values to defaults
-            props.path_false_value = 0.0
-            props.path_true_value = 1.0
-        else:  # BOOLEAN
-            props.path_false_value = path_info['false_value']
-            props.path_true_value = path_info['true_value']
-            # Reset float values to defaults
-            props.path_min_value = 0.0
-            props.path_max_value = 1.0
-        
-        # Reset recording status
+        # Reset other values
+        props.path_false_value = 0.0
+        props.path_true_value = 1.0
         props.path_recorded_min = False
         props.path_recorded_max = False
         
@@ -3254,6 +3351,7 @@ class SCENE_OT_edit_path_target(bpy.types.Operator):
         type_text = "boolean" if path_info['type'] == 'BOOLEAN' else "float"
         self.report({'INFO'}, f"Loaded {type_text} path for editing")
         return {'FINISHED'}
+
 
 class SCENE_OT_remove_path_target(bpy.types.Operator):
     bl_idname = "scene.remove_path_target"
@@ -3351,8 +3449,33 @@ class ANIM_OT_create_drivers(bpy.types.Operator):
             from_path = f"{props.from_object}.{from_prop}[{from_axis_index}]"
             source_name = props.from_object
             
+        elif props.custom_prop_is_set and props.custom_prop_source_object:
+            # Custom property source
+            obj    = props.custom_prop_source_object
+            pname  = props.custom_prop_name.strip()
+            bname  = props.custom_prop_bone.strip()
+            from_min   = props.custom_prop_min
+            from_max   = props.custom_prop_max
+            source_name = obj.name
+
+            if bname:
+                # Bone custom property
+                if obj.type != 'ARMATURE' or bname not in obj.pose.bones:
+                    self.report({'ERROR'}, f"Bone '{bname}' not found in armature '{obj.name}'")
+                    return {'CANCELLED'}
+                if pname not in obj.pose.bones[bname]:
+                    self.report({'ERROR'}, f"Custom property '{pname}' not found on bone '{bname}'")
+                    return {'CANCELLED'}
+                from_path = f'{obj.name}.pose.bones["{bname}"]["{pname}"]'
+            else:
+                # Object custom property
+                if pname not in obj:
+                    self.report({'ERROR'}, f"Custom property '{pname}' not found on object '{obj.name}'")
+                    return {'CANCELLED'}
+                from_path = f'{obj.name}["{pname}"]'
+
         else:
-            self.report({'ERROR'}, "No source configured with MIN, MAX, and detected axis. Please record MIN and MAX first.")
+            self.report({'ERROR'}, "No source configured. Please record MIN/MAX or set up a custom property source.")
             return {'CANCELLED'}
         
         # Validate that we have all required source data
@@ -3364,39 +3487,42 @@ class ANIM_OT_create_drivers(bpy.types.Operator):
         drivers_created = 0
         
         if props.target_type == 'CUSTOM_POSE':
-            # Create drivers for custom pose bones
+            # Create drivers for custom pose bones.
+            # Keys are "ArmatureName::BoneName"; bone_data['bone_name'] holds
+            # the bare bone name, bone_data['armature'] the armature name.
             to_data = get_to_bones_data(props)
             if not to_data:
                 self.report({'ERROR'}, "No TO bones recorded")
                 return {'CANCELLED'}
-            
-            for bone_name, bone_data in to_data.items():
+
+            for key, bone_data in to_data.items():
                 if not (bone_data.get('has_min', False) and bone_data.get('has_max', False)):
-                    print(f"Skipping bone {bone_name}: missing min/max data")
+                    print(f"Skipping {key}: missing min/max data")
                     continue
-                
+
                 detected_changes = bone_data.get('detected_changes', [])
                 if not detected_changes:
-                    print(f"Skipping bone {bone_name}: no detected changes")
+                    print(f"Skipping {key}: no detected changes")
                     continue
-                
+
+                actual_bone_name = bone_data.get('bone_name') or key.split('::')[-1]
+                armature_name    = bone_data.get('armature')
+
                 for change in detected_changes:
                     try:
                         to_prop = change.get('type')
                         to_axis = change.get('axis')
-                        to_min = change.get('min_val')
-                        to_max = change.get('max_val')
-                        armature_name = bone_data.get('armature')
-                        
-                        # Validate all required data is present
+                        to_min  = change.get('min_val')
+                        to_max  = change.get('max_val')
+
                         if None in [to_prop, to_axis, to_min, to_max, armature_name]:
-                            print(f"Skipping change for {bone_name}: missing data - prop:{to_prop}, axis:{to_axis}, min:{to_min}, max:{to_max}, armature:{armature_name}")
+                            print(f"Skipping change for {key}: missing data")
                             continue
-                        
-                        to_path = f"{armature_name}.pose.bones[\"{bone_name}\"].{to_prop}[{to_axis}]"
-                        
-                        print(f"Creating driver: {bone_name} - {to_prop}[{to_axis}]")
-                        
+
+                        to_path = f"{armature_name}.pose.bones[\"{actual_bone_name}\"].{to_prop}[{to_axis}]"
+
+                        print(f"Creating driver: {key} -> {to_prop}[{to_axis}]")
+
                         success = createDriver(
                             armature_name=source_name,
                             from_path=from_path,
@@ -3408,47 +3534,99 @@ class ANIM_OT_create_drivers(bpy.types.Operator):
                             selfRotation=False,
                             isDegrees=False
                         )
-                        
+
                         if success:
                             drivers_created += 1
-                            print(f"✓ Driver created successfully")
+                            print(f"✓ Driver created for {key}")
                         else:
-                            print(f"✗ Driver creation failed")
-                            
+                            print(f"✗ Driver creation failed for {key}")
+
                     except Exception as e:
-                        print(f"Error processing change for bone {bone_name}: {e}")
+                        print(f"Error processing change for {key}: {e}")
                         continue
-        
+
         elif props.target_type == 'SHAPEKEY_LIST':
-            # Create drivers for shape keys
             shapekey_data = get_shapekey_list_data(props)
             if not shapekey_data:
                 self.report({'ERROR'}, "No shape keys in list")
                 return {'CANCELLED'}
-            
+
             for key, sk_data in shapekey_data.items():
                 try:
+                    # Use per-entry snapshotted source if available, fall back to current global
+                    entry_armature = sk_data.get('source_armature') or props.from_armature
+                    entry_bone     = sk_data.get('source_bone')     or props.from_bone
+                    entry_object   = sk_data.get('source_object')   or props.from_object
+
+                    # Rebuild from_path and from_min/max from the entry's own snapshot
+                    if entry_bone and entry_armature:
+                        detected = sk_data.get('from_detected_axis') or props.from_detected_axis
+                        ax_type, ax_name = detected.split(' ')
+                        ax_idx = ['X', 'Y', 'Z'].index(ax_name)
+                        if ax_type == 'LOC':
+                            sk_from_min = sk_data.get('from_min_location', list(props.from_min_location))[ax_idx]
+                            sk_from_max = sk_data.get('from_max_location', list(props.from_max_location))[ax_idx]
+                            sk_prop = 'location'
+                        elif ax_type == 'ROT':
+                            sk_from_min = sk_data.get('from_min_rotation', list(props.from_min_rotation))[ax_idx]
+                            sk_from_max = sk_data.get('from_max_rotation', list(props.from_max_rotation))[ax_idx]
+                            sk_prop = 'rotation_euler'
+                        else:  # SCALE
+                            sk_from_min = sk_data.get('from_min_scale', list(props.from_min_scale))[ax_idx]
+                            sk_from_max = sk_data.get('from_max_scale', list(props.from_max_scale))[ax_idx]
+                            sk_prop = 'scale'
+                        sk_from_path = f"{entry_armature}.pose.bones[\"{entry_bone}\"].{sk_prop}[{ax_idx}]"
+                        sk_source_name = entry_armature
+
+                    elif entry_object:
+                        detected = sk_data.get('from_object_detected_axis') or props.from_object_detected_axis
+                        ax_type, ax_name = detected.split(' ')
+                        ax_idx = ['X', 'Y', 'Z'].index(ax_name)
+                        if ax_type == 'LOC':
+                            sk_from_min = sk_data.get('from_object_min_location', list(props.from_object_min_location))[ax_idx]
+                            sk_from_max = sk_data.get('from_object_max_location', list(props.from_object_max_location))[ax_idx]
+                            sk_prop = 'location'
+                        elif ax_type == 'ROT':
+                            sk_from_min = sk_data.get('from_object_min_rotation', list(props.from_object_min_rotation))[ax_idx]
+                            sk_from_max = sk_data.get('from_object_max_rotation', list(props.from_object_max_rotation))[ax_idx]
+                            sk_prop = 'rotation_euler'
+                        else:
+                            sk_from_min = sk_data.get('from_object_min_scale', list(props.from_object_min_scale))[ax_idx]
+                            sk_from_max = sk_data.get('from_object_max_scale', list(props.from_object_max_scale))[ax_idx]
+                            sk_prop = 'scale'
+                        sk_from_path = f"{entry_object}.{sk_prop}[{ax_idx}]"
+                        sk_source_name = entry_object
+
+                    else:
+                        # No per-entry source: fall back to global (old behaviour)
+                        sk_from_path  = from_path
+                        sk_from_min   = from_min
+                        sk_from_max   = from_max
+                        sk_source_name = source_name
+
                     to_path = f"{sk_data['object']}.data.shape_keys.key_blocks[\"{sk_data['shapekey']}\"].value"
-                    
+
                     success = createDriver(
-                        armature_name=source_name,
-                        from_path=from_path,
-                        fromMin=from_min,
-                        fromMax=from_max,
+                        armature_name=sk_source_name,
+                        from_path=sk_from_path,
+                        fromMin=sk_from_min,
+                        fromMax=sk_from_max,
                         to_path=to_path,
                         toMin=sk_data['min_value'],
                         toMax=sk_data['max_value'],
                         selfRotation=False,
                         isDegrees=False
                     )
-                    
+
                     if success:
                         drivers_created += 1
-                        
+
                 except Exception as e:
                     print(f"Error creating shapekey driver for {key}: {e}")
                     continue
-        
+
+
+
         elif props.target_type == 'PATH_LIST':
             # Create drivers for custom paths
             path_data = get_path_list_data(props)
@@ -3458,12 +3636,9 @@ class ANIM_OT_create_drivers(bpy.types.Operator):
             
             for path, path_info in path_data.items():
                 try:
-                    if path_info['type'] == 'FLOAT':
-                        to_min = path_info['min_value']
-                        to_max = path_info['max_value']
-                    else:  # BOOLEAN
-                        to_min = path_info['false_value']
-                        to_max = path_info['true_value']
+                    # Use min_value and max_value for both FLOAT and BOOLEAN types
+                    to_min = path_info['min_value']
+                    to_max = path_info['max_value']
                     
                     success = createDriver(
                         armature_name=source_name,
@@ -3512,18 +3687,19 @@ class ANIM_OT_remove_drivers(bpy.types.Operator):
         # Remove drivers from configured targets only
         if props.target_type == 'CUSTOM_POSE':
             to_data = get_to_bones_data(props)
-            
-            for bone_name, bone_data in to_data.items():
-                armature = bpy.data.objects.get(bone_data['armature'])
+
+            for key, bone_data in to_data.items():
+                armature = bpy.data.objects.get(bone_data.get('armature', ''))
                 if not armature or not armature.animation_data:
                     continue
-                
-                # Remove drivers for this specific bone's detected changes
+
+                actual_bone_name = bone_data.get('bone_name') or key.split('::')[-1]
+
                 for change in bone_data.get('detected_changes', []):
                     to_prop = change['type']
                     to_axis = change['axis']
-                    data_path = f'pose.bones["{bone_name}"].{to_prop}'
-                    
+                    data_path = f'pose.bones["{actual_bone_name}"].{to_prop}'
+
                     try:
                         armature.driver_remove(data_path, to_axis)
                         drivers_removed += 1
@@ -3659,6 +3835,14 @@ class SCENE_OT_clear_all(bpy.types.Operator):
         props.shapekey_target_object = ""
         props.shapekey_name = ""
         props.custom_path_input = ""
+
+        # Clear custom property source
+        props.custom_prop_is_set        = False
+        props.custom_prop_source_object = None
+        props.custom_prop_bone          = ""
+        props.custom_prop_name          = "my_driver"
+        props.custom_prop_min           = 0.0
+        props.custom_prop_max           = 1.0
         
         self.report({'INFO'}, "All data cleared")
         return {'FINISHED'}
@@ -3673,6 +3857,26 @@ class SCENE_OT_set_target_type(bpy.types.Operator):
     def execute(self, context):
         props = context.scene.driver_recorder_props
         props.target_type = self.target_type
+        return {'FINISHED'}
+
+
+class SCENE_OT_set_source_mode(bpy.types.Operator):
+    """Switch the source panel between transform recording and custom property mode"""
+    bl_idname = "scene.set_source_mode"
+    bl_label = "Set Source Mode"
+    bl_description = "Switch between bone/object transform source and custom property source"
+
+    mode: bpy.props.StringProperty()
+
+    def execute(self, context):
+        props = context.scene.driver_recorder_props
+        if self.mode == 'CUSTOM_PROP':
+            props.from_source_type = 'CUSTOM_PROP'
+        else:
+            # Restore to whichever transform type was last used
+            # (keep existing from_source_type if it is BONE or OBJECT)
+            if props.from_source_type == 'CUSTOM_PROP':
+                props.from_source_type = 'BONE'
         return {'FINISHED'}
 
 class SCENE_OT_clear_source(bpy.types.Operator):
@@ -3707,6 +3911,14 @@ class SCENE_OT_clear_source(bpy.types.Operator):
         props.from_object_max_location = (0.0, 0.0, 0.0)
         props.from_object_min_scale = (1.0, 1.0, 1.0)
         props.from_object_max_scale = (1.0, 1.0, 1.0)
+
+        # Clear custom property source
+        props.custom_prop_is_set        = False
+        props.custom_prop_source_object = None
+        props.custom_prop_bone          = ""
+        props.custom_prop_name          = "my_driver"
+        props.custom_prop_min           = 0.0
+        props.custom_prop_max           = 1.0
         
         self.report({'INFO'}, "Source configuration cleared")
         return {'FINISHED'}
@@ -3739,6 +3951,102 @@ class SCENE_OT_clear_targets(bpy.types.Operator):
         props.path_true_value = 1.0
         
         self.report({'INFO'}, "Target configuration cleared")
+        return {'FINISHED'}
+
+
+#---------------------------------------
+# Custom Property Source Operator
+#---------------------------------------
+class ANIM_OT_setup_custom_prop_source(bpy.types.Operator):
+    """Create (or reuse) a custom property and register it as the driver source"""
+    bl_idname = "anim.setup_custom_prop_source"
+    bl_label = "Set as Source"
+    bl_description = "Create the custom property if needed and register it as the driver source"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        props = context.scene.driver_recorder_props
+
+        obj = props.custom_prop_source_object
+        if not obj:
+            self.report({'ERROR'}, "Please select an object or armature")
+            return {'CANCELLED'}
+
+        prop_name = props.custom_prop_name.strip()
+        if not prop_name:
+            self.report({'ERROR'}, "Please enter a property name")
+            return {'CANCELLED'}
+
+        bone_name = props.custom_prop_bone.strip()
+        prop_min  = props.custom_prop_min
+        prop_max  = props.custom_prop_max
+
+        if prop_min >= prop_max:
+            self.report({'ERROR'}, "Min must be less than Max")
+            return {'CANCELLED'}
+
+        # ── Create or update the custom property ──────────────────────────
+        if bone_name:
+            # Bone custom property
+            if obj.type != 'ARMATURE':
+                self.report({'ERROR'}, "Selected object is not an armature")
+                return {'CANCELLED'}
+            if bone_name not in obj.pose.bones:
+                self.report({'ERROR'}, f"Bone '{bone_name}' not found in armature '{obj.name}'")
+                return {'CANCELLED'}
+            target = obj.pose.bones[bone_name]
+            container_name = f"{obj.name} > {bone_name}"
+        else:
+            target = obj
+            container_name = obj.name
+
+        # Create the property if it doesn't exist; always (re)set its UI range
+        if prop_name not in target:
+            target[prop_name] = (prop_min + prop_max) / 2.0
+            self.report({'INFO'}, f"Created custom property '{prop_name}' on {container_name}")
+        else:
+            self.report({'INFO'}, f"Using existing custom property '{prop_name}' on {container_name}")
+
+        # Apply ui_data for soft min/max (Blender 3.0+ / 4.x / 5.x compatible)
+        try:
+            ui = target.id_properties_ui(prop_name)
+            ui.update(min=prop_min, max=prop_max, soft_min=prop_min, soft_max=prop_max)
+        except Exception as e:
+            print(f"WARNING: Could not set UI data for custom property: {e}")
+
+        # ── Clear existing bone/object source so custom prop takes priority ──
+        props.from_armature              = ""
+        props.from_bone                  = ""
+        props.from_has_min               = False
+        props.from_has_max               = False
+        props.from_detected_axis         = ""
+        props.from_object                = ""
+        props.from_object_has_min        = False
+        props.from_object_has_max        = False
+        props.from_object_detected_axis  = ""
+
+        # Mark as configured
+        props.custom_prop_is_set = True
+
+        return {'FINISHED'}
+
+
+class ANIM_OT_clear_custom_prop_source(bpy.types.Operator):
+    """Clear the custom property source"""
+    bl_idname = "anim.clear_custom_prop_source"
+    bl_label = "Clear Custom Prop Source"
+    bl_description = "Clear the custom property source configuration"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        props = context.scene.driver_recorder_props
+        props.custom_prop_is_set         = False
+        props.custom_prop_source_object  = None
+        props.custom_prop_bone           = ""
+        props.custom_prop_name           = "my_driver"
+        props.custom_prop_min            = 0.0
+        props.custom_prop_max            = 1.0
+        self.report({'INFO'}, "Custom property source cleared")
         return {'FINISHED'}
 
 #---------------------------------------
@@ -3775,6 +4083,9 @@ classes = (
     SCENE_OT_edit_path_target,
     ANIM_OT_mirror_source,
     ANIM_OT_mirror_targets,
+    ANIM_OT_setup_custom_prop_source,
+    ANIM_OT_clear_custom_prop_source,
+    SCENE_OT_set_source_mode,
 )
 
 
