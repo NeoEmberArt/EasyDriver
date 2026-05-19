@@ -1,6 +1,6 @@
 import bpy
 from .core_functions import (
-    get_to_bones_data, get_shapekey_list_data, get_path_list_data, auto_detect_path_type
+    get_to_bones_data, get_shapekey_list_data, get_path_list_data, auto_detect_path_type, parse_target_path
 )
 
 #---------------------------------------
@@ -10,7 +10,7 @@ def get_version_compatible_icons():
     """Return compatible icons based on Blender version"""
     version = bpy.app.version
     
-    if version >= (4, 4, 0):
+    if version >= (4, 5, 0):
         return {
             'checkmark': 'CHECKMARK',
             'trash': 'TRASH',
@@ -101,7 +101,7 @@ class BONEMINMAX_PT_main_panel(bpy.types.Panel):
         if is_ready:
             header.label(text="", icon=icons['checkmark'])
         
-        # Mirror button - only show if source is configured
+        # Mirror button - only show for bone/object sources
         if props.from_bone or props.from_object:
             header.operator("anim.mirror_source", text="", icon='MOD_MIRROR')
         
@@ -111,10 +111,81 @@ class BONEMINMAX_PT_main_panel(bpy.types.Panel):
         if not getattr(context.scene, "show_source", True):
             return
             
-        # Content
         col = box.column()
-        
-        # Record buttons (no source type selection needed)
+
+        # ── Source mode tabs ────────────────────────────────────────────────
+        mode_row = col.row(align=True)
+        mode_row.scale_y = 0.95
+        btn = mode_row.operator("scene.set_source_mode", text="Bone / Object",
+                                depress=(props.from_source_type != 'CUSTOM_PROP'))
+        btn.mode = 'TRANSFORM'
+        btn2 = mode_row.operator("scene.set_source_mode", text="Custom Prop",
+                                 depress=(props.from_source_type == 'CUSTOM_PROP'))
+        btn2.mode = 'CUSTOM_PROP'
+
+        col.separator(factor=0.4)
+
+        if props.from_source_type == 'CUSTOM_PROP':
+            # ── Custom property source UI ───────────────────────────────────
+            self.draw_custom_prop_source(col, props, icons)
+        else:
+            # ── Transform source UI (bone / object) ─────────────────────────
+            self.draw_transform_source(col, props, context, icons)
+
+    def draw_custom_prop_source(self, col, props, icons):
+        """Draw the custom property source sub-panel (no clutter)."""
+        is_set = props.custom_prop_is_set
+
+        if is_set:
+            # Compact summary when configured
+            info = col.box()
+            info.scale_y = 0.9
+            row = info.row()
+            obj = props.custom_prop_source_object
+            bname = props.custom_prop_bone.strip()
+            pname = props.custom_prop_name
+            if bname:
+                row.label(text=f"{obj.name if obj else '?'} › {bname} › {pname}", icon='DRIVER')
+            else:
+                row.label(text=f"{obj.name if obj else '?'} › {pname}", icon='DRIVER')
+            range_row = info.row()
+            range_row.label(text=f"Range: {props.custom_prop_min:.3g} → {props.custom_prop_max:.3g}",
+                            icon='ORIENTATION_GIMBAL')
+            # Edit / clear row
+            action_row = col.row(align=True)
+            action_row.operator("anim.clear_custom_prop_source", text="Clear", icon=icons['trash'])
+        else:
+            # Input form
+            setup_box = col.box()
+
+            # Object / Armature picker
+            setup_box.prop(props, "custom_prop_source_object", text="Object")
+
+            obj = props.custom_prop_source_object
+            if obj and obj.type == 'ARMATURE':
+                # Bone picker (optional) — only shown for armatures
+                setup_box.prop_search(props, "custom_prop_bone",
+                                      obj.pose, "bones", text="Bone (opt.)")
+
+            # Property name
+            setup_box.prop(props, "custom_prop_name", text="Prop Name")
+
+            # Min / Max on one row
+            range_row = setup_box.row(align=True)
+            range_row.prop(props, "custom_prop_min", text="Min")
+            range_row.prop(props, "custom_prop_max", text="Max")
+
+            # Set button — enabled only when we have enough info
+            can_set = bool(obj and props.custom_prop_name.strip())
+            set_row = col.row()
+            set_row.enabled = can_set
+            set_row.scale_y = 1.2
+            set_row.operator("anim.setup_custom_prop_source", text="Create / Use Property",
+                             icon=icons['checkmark'])
+
+    def draw_transform_source(self, col, props, context, icons):
+        """Draw bone / object transform source UI (original behaviour)."""
+        # Record buttons
         row = col.row(align=True)
         row.scale_y = 1.2
         has_min = props.from_has_min if props.from_bone else props.from_object_has_min
@@ -203,9 +274,6 @@ class BONEMINMAX_PT_main_panel(bpy.types.Panel):
             else:
                 # Normal status display
                 row = info.row(align=True)
-                
-                # Min/Max status (check appropriate properties)
-                # Detected axis
                 detected_axis = props.from_detected_axis if props.from_bone else props.from_object_detected_axis
                 if detected_axis:
                     axis_col = row.column()
@@ -355,8 +423,9 @@ class BONEMINMAX_PT_main_panel(bpy.types.Panel):
             except:
                 detected_type = 'FLOAT'
             
+            # Record buttons - same functionality, different labels based on type
             if detected_type == 'BOOLEAN':
-                # Boolean: Record False / Record True
+                # Boolean: Record False / Record True (but still records to min/max)
                 record_row.operator("scene.record_path_min", text="Record False", 
                                 icon=icons['socket_on'] if props.path_recorded_min else icons['socket_off'])
                 record_row.operator("scene.record_path_max", text="Record True", 
@@ -377,15 +446,14 @@ class BONEMINMAX_PT_main_panel(bpy.types.Panel):
             else:
                 type_row.label(text="Float Property", icon='DRIVER')
             
-            # Show appropriate value controls based on detected type
-            if detected_type == 'FLOAT':
-                row = add_box.row(align=True)
+            # Always show min/max inputs regardless of type
+            row = add_box.row(align=True)
+            if detected_type == 'BOOLEAN':
+                row.prop(props, "path_min_value", text="False")
+                row.prop(props, "path_max_value", text="True")
+            else:
                 row.prop(props, "path_min_value", text="Min")
                 row.prop(props, "path_max_value", text="Max")
-            else:  # BOOLEAN
-                row = add_box.row(align=True)
-                row.prop(props, "path_false_value", text="False")
-                row.prop(props, "path_true_value", text="True")
             
             # Add button
             add_box.operator("scene.add_path_target", text="Add", icon=icons['plus'])
@@ -407,11 +475,11 @@ class BONEMINMAX_PT_main_panel(bpy.types.Panel):
                 display_path = path if len(path) <= 30 else path[:27] + "..."
                 col.label(text=display_path)
                 
-                # Value info with type indicator
-                if path_info['type'] == 'FLOAT':
-                    col.label(text=f"Float: {path_info['min_value']:.2f} → {path_info['max_value']:.2f}", icon='DRIVER')
+                # Value info with type indicator - unified to use min/max for both types
+                if path_info['type'] == 'BOOLEAN':
+                    col.label(text=f"Bool: {path_info['min_value']:.2f} → {path_info['max_value']:.2f}", icon='CHECKBOX_HLT')
                 else:
-                    col.label(text=f"Bool: {path_info['false_value']:.2f} / {path_info['true_value']:.2f}", icon='CHECKBOX_HLT')
+                    col.label(text=f"Float: {path_info['min_value']:.2f} → {path_info['max_value']:.2f}", icon='DRIVER')
                 col.scale_y = 0.8
                 
                 # Buttons column
@@ -432,54 +500,65 @@ class BONEMINMAX_PT_main_panel(bpy.types.Panel):
     def draw_pose_targets(self, layout, props):
         """Draw pose target controls."""
         icons = get_version_compatible_icons()
-        
+
         # Record buttons
         row = layout.row(align=True)
         row.scale_y = 1.2
 
         to_data = get_to_bones_data(props)
 
-        has_min = False
-        has_max = False
-        if to_data:
-            for bone_data in to_data.values():
-                for bone_name, bone_data in to_data.items():
-                    if bone_data.get('has_min'):
-                        has_min = True
-                    if bone_data.get('has_max'):
-                        has_max = True
-        
-        row.operator("pose.record_to_min_pose", text="Record Min Pose", 
+        has_min = any(bd.get('has_min') for bd in to_data.values())
+        has_max = any(bd.get('has_max') for bd in to_data.values())
+
+        row.operator("pose.record_to_min_pose", text="Record Min Pose",
                     icon=icons['socket_on'] if has_min else icons['socket_off'])
-        row.operator("pose.record_to_max_pose", text="Record Max Pose", 
+        row.operator("pose.record_to_max_pose", text="Record Max Pose",
                     icon=icons['socket_on'] if has_max else icons['socket_off'])
-        
-        # Target list
+
+        # Target list — group by armature for clarity
         to_data = get_to_bones_data(props)
         if to_data:
             layout.separator(factor=0.5)
-            
+
+            # Collect unique armatures that have at least one bone with min recorded
+            armatures_seen = {}
+            for key, bone_data in to_data.items():
+                arm = bone_data.get('armature', '?')
+                armatures_seen.setdefault(arm, []).append((key, bone_data))
+
             list_box = layout.box()
-            list_box.label(text="Bones:", icon='OUTLINER_DATA_ARMATURE')
-            
-            for bone_name, bone_data in to_data.items():
-                if bone_data.get('has_min') and bone_data.get('has_max'):
+
+            for arm_name, entries in armatures_seen.items():
+                # Armature header
+                arm_row = list_box.row()
+                arm_row.label(text=arm_name, icon='OUTLINER_DATA_ARMATURE')
+
+                for key, bone_data in entries:
+                    bone_display = bone_data.get('bone_name') or key.split('::')[-1]
+                    is_complete  = bone_data.get('has_min') and bone_data.get('has_max')
+
                     row = list_box.row()
-                    
-                    # Info column
+                    row.separator(factor=1.5)
+
                     col = row.column()
-                    col.label(text=bone_name, icon='BONE_DATA')
-                    
-                    # Show changes
-                    changes = bone_data.get('detected_changes', [])
-                    if changes:
-                        change_text = " & ".join([c['display'] for c in changes])
-                        col.label(text=change_text, icon='ORIENTATION_GIMBAL')
-                    col.scale_y = 0.8
-                    
-                    # Remove button
+                    col.scale_y = 0.85
+
+                    if is_complete:
+                        col.label(text=bone_display, icon='BONE_DATA')
+                        changes = bone_data.get('detected_changes', [])
+                        if changes:
+                            col.label(text=" & ".join(c['display'] for c in changes),
+                                      icon='ORIENTATION_GIMBAL')
+                    else:
+                        # Partially recorded — show pending status
+                        has_min_b = bone_data.get('has_min', False)
+                        has_max_b = bone_data.get('has_max', False)
+                        status = "MIN ✓  MAX —" if has_min_b else "MIN —  MAX ✓" if has_max_b else "—"
+                        col.label(text=f"{bone_display}  [{status}]", icon='BONE_DATA')
+
+                    # Remove button — passes the full "Armature::Bone" key
                     op = row.operator("pose.remove_pose_bone", text="", icon='X')
-                    op.bone_name = bone_name
+                    op.bone_name = key
 
     def draw_shapekey_targets(self, layout, props):
         """Draw shapekey target controls."""
@@ -553,7 +632,10 @@ class BONEMINMAX_PT_main_panel(bpy.types.Panel):
     # Utils
     #---------------------------------------
     def get_source_status(self, props):
-        """Check if source is properly configured (works for both bone and object)."""
+        """Check if source is properly configured (works for bone, object, and custom prop)."""
+        # Custom property source
+        if props.custom_prop_is_set and props.custom_prop_source_object:
+            return True
         # Check bone source
         if props.from_bone:
             return bool(props.from_has_min and props.from_has_max and props.from_detected_axis)
