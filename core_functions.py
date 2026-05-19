@@ -3,6 +3,7 @@ import bpy
 import math
 import re
 import json
+import mathutils
 from math import degrees, radians
 
 #---------------------------------------
@@ -178,7 +179,15 @@ def configure_driver(fcurve, source_config):
             
             target.id = source_config['object']
             target.data_path = f"{source_config['property']}[{source_config['index']}]"
-        
+
+        elif source_config['type'] == 'custom_prop':
+            print("✓ Configuring custom property source...")
+            var.type = 'SINGLE_PROP'
+            target = var.targets[0]
+            target.id_type = 'OBJECT'
+            target.id = source_config['object']
+            target.data_path = source_config['data_path']
+
         else:
             print(f"ERROR: Unknown source type: {source_config['type']}")
             return False
@@ -492,7 +501,7 @@ def parse_target_path(to_path):
         (r'bpy\.data\.materials\["([^"]+)"\]\.node_tree\.nodes\["([^"]+)"\]\.color_ramp\.elements\[(\d+)\]\.(.+)', 
          'colorramp_long', "✓ COLORRAMP ELEMENT (LONG FORMAT) DETECTED!"),
         
-        (r'bpy\.data\.materials\["([^"]+)"\]\.node_tree\.nodes\["([^"]+)"\]\.(?:inputs|outputs)\[(\d+)\]\.default_value', 
+        (r'bpy\.data\.materials\["([^"]+)"\]\.node_tree\.nodes\["([^"]+)"\]\.(inputs|outputs)\[(\d+)\]\.default_value', 
          'material_node_long', "✓ MATERIAL NODE (LONG FORMAT) DETECTED!"),
         
         (r'bpy\.data\.objects\["([^"]+)"\]\.constraints\["([^"]+)"\]\.(.+)', 
@@ -533,7 +542,7 @@ def parse_target_path(to_path):
         (r'(.+)\.constraints\["([^"]+)"\]\.(.+)', 
          'constraint_short', "✓ OBJECT CONSTRAINT (SHORT FORMAT) DETECTED!"),
         
-        (r'(.+)\.node_tree\.nodes\["([^"]+)"\]\.(?:inputs|outputs)\[(\d+)\]\.default_value', 
+        (r'(.+)\.node_tree\.nodes\["([^"]+)"\]\.(inputs|outputs)\[(\d+)\]\.default_value', 
          'material_node_short', "✓ MATERIAL NODE (SHORT FORMAT) DETECTED!"),
         
         # Custom properties pattern (short format - must be before general pattern)
@@ -590,20 +599,32 @@ def parse_target_path(to_path):
         return material.node_tree, data_path, index
     
     def handle_material_node_long(groups):
-        material_name, node_name, socket_index = groups
+        # groups: (material_name, node_name, socket_type, socket_index)
+        # socket_type is now explicitly captured from the regex ("inputs" or "outputs")
+        material_name, node_name, socket_type, socket_index = groups
         socket_index = int(socket_index)
-        
+
         material = get_data_block(material_name, 'materials')
         if not material: return None, None, None
-        
+
         node = validate_node_tree(material, node_name)
         if not node: return None, None, None
-        
-        socket_type = "inputs" if "inputs" in to_path else "outputs"
-        if socket_index >= len(getattr(node, socket_type)):
-            print(f"ERROR: {socket_type.capitalize()} index out of range!")
+
+        # Validate socket type and index (compatible with Blender 4.0–5.x)
+        node_sockets = getattr(node, socket_type, None)
+        if node_sockets is None:
+            print(f"ERROR: Node has no '{socket_type}' attribute!")
             return None, None, None
-        
+        if socket_index >= len(node_sockets):
+            print(f"ERROR: {socket_type.capitalize()} index {socket_index} out of range (node has {len(node_sockets)})!")
+            return None, None, None
+
+        # Verify socket is driveable
+        socket = node_sockets[socket_index]
+        if not hasattr(socket, 'default_value'):
+            print(f"ERROR: Socket has no default_value (may not be driveable)!")
+            return None, None, None
+
         relative_path = f'nodes["{node_name}"].{socket_type}[{socket_index}].default_value'
         return material.node_tree, relative_path, -1
     
@@ -796,7 +817,51 @@ def parse_source_path(from_path, armature_name):
             'index': index
         }
     
-    # Object property source
+    # Custom property on a bone: ARMATURE_NAME.pose.bones["BONE"]["PROP"]
+    bone_custom_match = re.match(r'(.+)\.pose\.bones\["([^"]+)"\]\["([^"]+)"\]', from_path)
+    if bone_custom_match:
+        print("✓ BONE CUSTOM PROPERTY SOURCE DETECTED!")
+        armature_name_path, bone_name, prop_name = bone_custom_match.groups()
+        # armature_name_path may equal armature_name passed in, or the name extracted
+        obj_name = armature_name_path
+        if obj_name not in bpy.data.objects:
+            print(f"ERROR: Armature '{obj_name}' not found!")
+            return None
+        obj = bpy.data.objects[obj_name]
+        if obj.type != 'ARMATURE' or bone_name not in obj.pose.bones:
+            print(f"ERROR: Bone '{bone_name}' not found in armature '{obj_name}'!")
+            return None
+        bone = obj.pose.bones[bone_name]
+        if prop_name not in bone:
+            print(f"ERROR: Custom property '{prop_name}' not found on bone '{bone_name}'!")
+            return None
+        data_path = f'pose.bones["{bone_name}"]["{prop_name}"]'
+        return {
+            'type': 'custom_prop',
+            'object': obj,
+            'data_path': data_path,
+        }
+
+    # Custom property on an object: OBJECT_NAME["PROP"]
+    obj_custom_match = re.match(r'(.+)\["([^"]+)"\]$', from_path)
+    if obj_custom_match:
+        print("✓ OBJECT CUSTOM PROPERTY SOURCE DETECTED!")
+        obj_name, prop_name = obj_custom_match.groups()
+        if obj_name not in bpy.data.objects:
+            print(f"ERROR: Source object '{obj_name}' not found!")
+            return None
+        obj = bpy.data.objects[obj_name]
+        if prop_name not in obj:
+            print(f"ERROR: Custom property '{prop_name}' not found on object '{obj_name}'!")
+            return None
+        data_path = f'["{prop_name}"]'
+        return {
+            'type': 'custom_prop',
+            'object': obj,
+            'data_path': data_path,
+        }
+
+    # Object transform property source: OBJECT_NAME.location[0] etc.
     obj_match = re.match(r'(.+)\.([a-zA-Z_]+)\[(\d+)\]', from_path)
     if obj_match:
         print("✓ OBJECT SOURCE DETECTED!")
@@ -927,15 +992,18 @@ def ensure_euler_rotation(bone, override=False):
         original_mode = bone.rotation_mode
         
         if original_mode == 'QUATERNION':
-            # Read quaternion as Euler without permanently switching
-            current_euler = bone.rotation_quaternion.to_euler()
-            # Temporarily set to Euler to ensure consistent reading of euler channels
-            bone.rotation_mode = 'XYZ'
-            bone.rotation_euler = current_euler
-            # Immediately restore original mode and value
-            bone.rotation_mode = 'QUATERNION'
-            bone.rotation_quaternion = bone.rotation_quaternion  # no-op to keep value
-            print(f"INFO: Temporarily read {bone.name} quaternion as Euler (mode preserved)")
+            # Convert quaternion to euler in-memory — NO mode switch needed.
+            # Switching rotation_mode even temporarily causes a pose flicker
+            # and may confuse the depsgraph.
+            current_euler = bone.rotation_quaternion.to_euler('XYZ')
+            print(f"INFO: Read {bone.name} quaternion as XYZ Euler (mode preserved, no flicker)")
+            return current_euler
+        elif original_mode == 'AXIS_ANGLE':
+            # Convert axis-angle to euler in-memory
+            aa = bone.rotation_axis_angle
+            q = mathutils.Quaternion(aa[1:], aa[0])  # (w, axis) -> Quaternion
+            current_euler = q.to_euler('XYZ')
+            print(f"INFO: Read {bone.name} axis-angle as XYZ Euler (mode preserved, no flicker)")
             return current_euler
         else:
             # Already Euler: just return a copy
@@ -955,14 +1023,49 @@ def ensure_object_euler_rotation(obj):
         return obj.rotation_euler.copy()
 
 def get_selected_pose_bones(context):
-    """Get all selected pose bones from context."""
-    obj = context.object
-    if not obj or obj.type != 'ARMATURE' or obj.mode != 'POSE':
-        return None, []
-    
-    selected_bones = [bone for bone in obj.pose.bones if bone.bone.select]
-    return obj, selected_bones
+    """Get all selected pose bones across ALL armatures in the scene.
 
+    Returns (primary_obj, [(armature_obj, pose_bone), ...]) so callers can
+    know which armature every bone belongs to.  The old single-return-value
+    form is kept for back-compat: callers that only unpack two values still
+    work because the second item is a list of (armature, bone) tuples.
+
+    Also accepts the old call signature – if only one armature is in pose
+    mode it behaves exactly as before.
+    """
+    def _is_selected(bone):
+        try:
+            if hasattr(bone.bone, 'select_get'):
+                return bone.bone.select_get()
+            if hasattr(bone.bone, 'select'):
+                return bone.bone.select
+            if hasattr(bone, 'select'):
+                return bone.select
+        except (AttributeError, RuntimeError):
+            pass
+        return False
+
+    primary_obj = context.object
+    result = []   # list of (armature_obj, pose_bone)
+
+    # Walk every object in the scene that is currently in Pose Mode
+    for obj in context.scene.objects:
+        if obj.type != 'ARMATURE':
+            continue
+        # An armature is "in pose mode" when it is the active object in pose
+        # mode, OR when it is a selected object that Blender has also put into
+        # pose mode (multi-object edit / pose in Blender 2.9+).
+        if obj.mode != 'POSE':
+            continue
+        for bone in obj.pose.bones:
+            if _is_selected(bone):
+                result.append((obj, bone))
+
+    # Legacy callers do:  obj, selected_bones = get_selected_pose_bones(context)
+    # and then use bone.location etc. directly.  Keep that working by returning
+    # the primary object as first element and the list of (arm, bone) pairs as
+    # second.  Callers that need multi-rig awareness iterate the pairs.
+    return primary_obj, result
 def detect_significant_changes(min_vals, max_vals, threshold_loc=0.001, threshold_rot=0.06, threshold_scale=0.01):
     """Detect which axes have significant changes between min and max values."""
     changes = []
@@ -1048,8 +1151,6 @@ def validate_custom_path(path, context=None):
 
 
 # Add these functions to core_functions.py
-
-import bpy
 
 def get_mirrored_name(name):
     """Get the mirrored/opposite name for bones and shape keys following standard naming conventions."""
@@ -1219,53 +1320,64 @@ def mirror_source(props):
     return False, "No source configured"
 
 def mirror_pose_targets(props):
-    """Mirror all pose targets to opposite side."""
+    """Mirror all pose targets to opposite side.
+
+    Keys in to_data are "ArmatureName::BoneName".  We mirror only the
+    bone-name part (after '::'), then write the result under the correct
+    'ArmatureName::MirroredBoneName' key so create_drivers keeps working.
+    """
     to_data = get_to_bones_data(props)
     mirrored_data = {}
     mirrored_count = 0
     skipped_bones = []
-    
-    print(f"DEBUG: Starting pose target mirror with {len(to_data)} bones")
-    
-    for bone_name, bone_data in to_data.items():
-        mirrored_bone = get_mirrored_name(bone_name)
-        print(f"DEBUG: Processing '{bone_name}' → '{mirrored_bone}'")
-        
+
+    print(f"DEBUG: Starting pose target mirror with {len(to_data)} entries")
+
+    for key, bone_data in to_data.items():
+        # Extract the real bone name from the key (handles both old bare keys
+        # and new 'Armature::Bone' keys for backward compat).
+        if '::' in key:
+            armature_prefix, bare_bone_name = key.split('::', 1)
+        else:
+            armature_prefix = bone_data.get('armature', '')
+            bare_bone_name  = key
+
+        mirrored_bone = get_mirrored_name(bare_bone_name)
+        print(f"DEBUG: Processing '{bare_bone_name}' → '{mirrored_bone}'")
+
         if mirrored_bone:
-            # Check if mirrored bone exists in the armature
-            armature_name = bone_data.get('armature')
+            armature_name = bone_data.get('armature') or armature_prefix
             armature = bpy.data.objects.get(armature_name) if armature_name else None
-            
+
             if armature and armature.type == 'ARMATURE':
                 if mirrored_bone in armature.pose.bones:
-                    # Create mirrored bone data with same values
-                    mirrored_data[mirrored_bone] = bone_data.copy()
+                    # Build the correct new key
+                    new_key = f"{armature_name}::{mirrored_bone}"
+                    new_data = bone_data.copy()
+                    new_data['bone_name'] = mirrored_bone  # keep bone_name field in sync
+                    mirrored_data[new_key] = new_data
                     mirrored_count += 1
-                    print(f"DEBUG: ✓ Mirrored {bone_name} → {mirrored_bone}")
+                    print(f"DEBUG: ✓ Mirrored {key} → {new_key}")
                 else:
-                    # Keep original if mirror doesn't exist
-                    mirrored_data[bone_name] = bone_data
-                    skipped_bones.append(bone_name)
-                    # Show similar bone names for debugging
-                    similar_bones = [b.name for b in armature.pose.bones 
-                                   if any(part in b.name.lower() for part in mirrored_bone.lower().split('_'))][:3]
+                    mirrored_data[key] = bone_data
+                    skipped_bones.append(bare_bone_name)
+                    similar_bones = [b.name for b in armature.pose.bones
+                                     if any(part in b.name.lower()
+                                            for part in mirrored_bone.lower().split('_'))][:3]
                     print(f"DEBUG: ✗ Mirror bone '{mirrored_bone}' not found. Similar: {similar_bones}")
             else:
-                # Keep original if armature not found
-                mirrored_data[bone_name] = bone_data
-                skipped_bones.append(bone_name)
+                mirrored_data[key] = bone_data
+                skipped_bones.append(bare_bone_name)
                 print(f"DEBUG: ✗ Armature '{armature_name}' not found or invalid")
         else:
-            # Keep original if no mirror pattern
-            mirrored_data[bone_name] = bone_data
-            skipped_bones.append(bone_name)
-            print(f"DEBUG: ✗ No mirror pattern found for: {bone_name}")
-    
-    # Update the data
+            mirrored_data[key] = bone_data
+            skipped_bones.append(bare_bone_name)
+            print(f"DEBUG: ✗ No mirror pattern found for: {bare_bone_name}")
+
     set_to_bones_data(props, mirrored_data)
-    
+
     print(f"DEBUG: Pose mirror complete - {mirrored_count} mirrored, {len(skipped_bones)} skipped")
-    
+
     message = f"Mirrored {mirrored_count} bones"
     if skipped_bones:
         message += f", skipped {len(skipped_bones)} bones"
@@ -1273,7 +1385,7 @@ def mirror_pose_targets(props):
             message += f": {', '.join(skipped_bones)}"
         else:
             message += f": {', '.join(skipped_bones[:3])} and {len(skipped_bones) - 3} more"
-    
+
     return mirrored_count > 0, message
 
 
